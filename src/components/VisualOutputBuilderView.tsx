@@ -5,6 +5,7 @@ import {
   ArrowLeft,
   ArrowRight,
   ArrowUp,
+  Check,
   CheckCircle2,
   Copy,
   Download,
@@ -12,6 +13,7 @@ import {
   FileCheck2,
   FileCode2,
   GitBranch,
+  Info,
   Link2,
   Lock,
   Plus,
@@ -22,7 +24,15 @@ import {
   Wand2,
 } from 'lucide-react';
 import { useConfigurator } from '../context/ConfiguratorContext';
-import { generateOutputArtifact } from '../domain/engine';
+import {
+  evaluateAndFormatField,
+  generateOutputArtifact,
+  getCutoffDateForPeriod,
+  getPeriodSyncedDemoRows,
+  measureFieldLength,
+  proposeFieldMappings,
+  resolveDynamicFileName,
+} from '../domain/engine';
 import {
   ConfiguredOutput,
   EmptyDatasetPolicy,
@@ -30,12 +40,15 @@ import {
   PackageMemberRole,
   StructureField,
   TransformationKind,
+  ValidationLayer,
 } from '../domain/types';
+import { HelpTooltip } from './HelpTooltip';
+import { Step3DataOriginView } from './Step3DataOriginView';
 
 const WIZARD_STEPS = [
   { step: 1, title: 'Paso 1. Datos generales', subtitle: 'Identificación y tipo de archivo' },
   { step: 2, title: 'Paso 2. Estructura del archivo', subtitle: 'Campos, propiedades y vista previa' },
-  { step: 3, title: 'Paso 3. Origen de información', subtitle: 'Mapeo de datos y transformaciones' },
+  { step: 3, title: 'Paso 3. Origen de datos y correspondencia de campos', subtitle: 'Formatos del sistema, fuentes cliente y mapeo' },
   { step: 4, title: 'Paso 4. Validaciones', subtitle: 'Controles de estructura y archivo' },
   { step: 5, title: 'Paso 5. Generación y entrega', subtitle: 'Nombre dinámico, paquete y canal' },
   { step: 6, title: 'Paso 6. Pruebas', subtitle: 'Validación, vista previa y descarga' },
@@ -51,13 +64,22 @@ export const VisualOutputBuilderView: React.FC = () => {
     activeBuilderStep: builderStep,
     setActiveBuilderStep: setBuilderStep,
     dataContracts,
+    catalogSourceFormats,
     deliveryChannels,
     regulatoryFormats,
     associations,
     daqueProfiles,
+    executionRuns,
     globalEntity,
     globalPeriod,
+    lastSavedAt,
     saveConfiguredOutput,
+    saveOutputType,
+    saveDataContract,
+    saveCatalogSourceFormat,
+    importCatalogEntriesBatch,
+    registerStructureForCatalogEntry,
+    addExecutionBatchToContract,
     createNewRevisionFromOutput,
     transitionOutputStatus,
     openAssociationForOutput,
@@ -82,6 +104,23 @@ export const VisualOutputBuilderView: React.FC = () => {
     'Configuración verificada en los 7 pasos del diseñador y aprobada para publicación.'
   );
 
+  // Modal: Confirm File Type Change in Step 1
+  const [pendingOutputTypeId, setPendingOutputTypeId] = useState<string | null>(null);
+
+  // Step 3: Auto-map overwrite option
+  const [overwriteConfirmedMappings, setOverwriteConfirmedMappings] = useState<boolean>(false);
+
+  // Step 4: Guided Rule Builder State
+  const [guidedRuleField, setGuidedRuleField] = useState<string>('');
+  const [guidedRuleOperator, setGuidedRuleOperator] = useState<
+    'NOT_NULL' | 'MAX_LEN' | 'MIN_NUM' | 'NOT_ZERO' | 'REGEX' | 'IN_LIST' | 'RECORD_COUNT'
+  >('NOT_NULL');
+  const [guidedRuleParam, setGuidedRuleParam] = useState<string>('10');
+  const [guidedRuleSeverity, setGuidedRuleSeverity] = useState<'Bloqueante' | 'Advertencia'>(
+    'Bloqueante'
+  );
+  const [guidedRuleMessage, setGuidedRuleMessage] = useState<string>('');
+
   // Sync local draft when selectedOutputId changes or when status transitions externally
   useEffect(() => {
     setDraft(currentStoredOutput);
@@ -95,14 +134,18 @@ export const VisualOutputBuilderView: React.FC = () => {
 
   const isImmutable = draft.status === 'Publicada' || draft.status === 'Aprobada';
 
-  // Helper that updates local draft AND auto-persists to context if editable (Scenario 6)
+  // Helper that updates local draft AND auto-persists to context if editable
   const updateDraft = (updater: (prev: ConfiguredOutput) => ConfiguredOutput) => {
     setDraft((prev) => {
       const next = updater(prev);
+      const withUpdatedFingerprint: ConfiguredOutput = {
+        ...next,
+        fingerprint: `sha256:${next.code.toLowerCase()}_v${next.version.replace('.', '_')}_${next.fields.length}f_${next.validationRules.length}r`,
+      };
       if (prev.status === 'Borrador' || prev.status === 'En revisión') {
-        saveConfiguredOutput(next, true);
+        saveConfiguredOutput(withUpdatedFingerprint, true);
       }
-      return next;
+      return withUpdatedFingerprint;
     });
   };
 
@@ -115,6 +158,11 @@ export const VisualOutputBuilderView: React.FC = () => {
     () =>
       dataContracts.find((s) => s.id === draft.dataContractId) || dataContracts[0],
     [dataContracts, draft.dataContractId]
+  );
+
+  const syncedDemoRows = useMemo(
+    () => getPeriodSyncedDemoRows(selectedDataContract, globalPeriod),
+    [selectedDataContract, globalPeriod]
   );
 
   const linkedAssociations = useMemo(
@@ -141,38 +189,46 @@ export const VisualOutputBuilderView: React.FC = () => {
     );
   }, [linkedAssociations, daqueProfiles]);
 
+  const fileNameContext = useMemo(
+    () => ({
+      entidad: globalEntity.replace(/\s+/g, '_'),
+      formato: activeFormat?.code || draft.code,
+      periodo: globalPeriod,
+      version: draft.version,
+      consecutivo: '01',
+    }),
+    [globalEntity, activeFormat, draft.code, globalPeriod, draft.version]
+  );
+
   // Real-time compilation, physical preview, and multi-layer validation
   const compiledResult = useMemo(() => {
     return generateOutputArtifact({
       output: draft,
       outputType: selectedOutputType,
       contract: selectedDataContract,
+      allContracts: dataContracts,
       daqueProfile: activeDaqueProfile,
-      context: {
-        entidad: globalEntity.replace(/\s+/g, '_'),
-        formato: activeFormat?.code || draft.code,
-        periodo: globalPeriod,
-        version: draft.version,
-        consecutivo: '01',
-      },
+      context: fileNameContext,
+      entidad: globalEntity,
     });
   }, [
     draft,
     selectedOutputType,
     selectedDataContract,
+    dataContracts,
     activeDaqueProfile,
+    fileNameContext,
     globalEntity,
-    activeFormat,
-    globalPeriod,
   ]);
 
-  // Additional structural diagnostics (unmapped required fields, invalid lengths, TXT overlaps)
+  // Structural diagnostics (unmapped required fields, invalid lengths, TXT overlaps)
   const configDiagnostics = useMemo(() => {
     const issues: {
       id: string;
       severity: 'Bloqueante' | 'Advertencia';
       step: number;
       fieldId?: string;
+      fieldTechnicalName?: string;
       title: string;
       howToFix: string;
     }[] = [];
@@ -182,7 +238,7 @@ export const VisualOutputBuilderView: React.FC = () => {
         id: 'DIAG-GEN-01',
         severity: 'Bloqueante',
         step: 1,
-        title: 'Nombre o código de la salida vacío',
+        title: 'Nombre funcional o código identificador vacío',
         howToFix: 'En el Paso 1 (Datos generales), complete el nombre y el código identificador.',
       });
     }
@@ -204,8 +260,9 @@ export const VisualOutputBuilderView: React.FC = () => {
           severity: 'Bloqueante',
           step: 2,
           fieldId: f.id,
+          fieldTechnicalName: f.technicalName,
           title: `Longitud inválida (${f.length}) en el campo "${f.technicalName}"`,
-          howToFix: `En el Paso 2, seleccione el campo "${f.technicalName}" y asigne una longitud mayor a 0.`,
+          howToFix: `En el Paso 2, seleccione el campo "${f.technicalName}" y asigne una longitud mayor a 0 según el instructivo oficial.`,
         });
       }
 
@@ -213,6 +270,8 @@ export const VisualOutputBuilderView: React.FC = () => {
         f.required &&
         !f.mapping.sourceField.trim() &&
         f.mapping.transformationKind !== 'Constante' &&
+        f.mapping.transformationKind !== 'Variable de contexto' &&
+        f.mapping.transformationKind !== 'Concatenación tipada' &&
         !f.defaultValue.trim()
       ) {
         issues.push({
@@ -220,8 +279,21 @@ export const VisualOutputBuilderView: React.FC = () => {
           severity: 'Bloqueante',
           step: 3,
           fieldId: f.id,
+          fieldTechnicalName: f.technicalName,
           title: `Campo obligatorio "${f.technicalName}" sin origen de datos asignado`,
-          howToFix: `En el Paso 3 (Origen de información), asigne una columna de origen o un valor constante al campo "${f.technicalName}".`,
+          howToFix: `En el Paso 3 (Origen de datos y correspondencia de campos), seleccione una columna de la fuente o defina una constante/variable de contexto para "${f.technicalName}".`,
+        });
+      }
+
+      if (f.mapping.mappingStatus === 'Requiere revisión por cambio en fuente') {
+        issues.push({
+          id: `DIAG-SRCCHG-${f.id}`,
+          severity: 'Bloqueante',
+          step: 3,
+          fieldId: f.id,
+          fieldTechnicalName: f.technicalName,
+          title: `Campo "${f.technicalName}" requiere revisión por cambio en la estructura de origen`,
+          howToFix: `En el Paso 3, revise la columna origen "${f.mapping.sourceField}" (${f.mapping.changeImpactNote || 'estructura actualizada'}) y confirme nuevamente la correspondencia.`,
         });
       }
     });
@@ -240,9 +312,10 @@ export const VisualOutputBuilderView: React.FC = () => {
             severity: 'Bloqueante',
             step: 2,
             fieldId: next.id,
+            fieldTechnicalName: next.technicalName,
             title: `Solapamiento de posiciones entre "${cur.technicalName}" (termina en ${curEnd}) y "${next.technicalName}" (inicia en ${next.startPosition || 1})`,
             howToFix:
-              'En el Paso 2, pulse "Recalcular posiciones TXT" para ordenar los segmentos secuencialmente sin cruces.',
+              'En el Paso 2, pulse "Recalcular posiciones TXT automáticamente" para alinear las posiciones consecutivamente sin cruces.',
           });
         }
       }
@@ -263,6 +336,19 @@ export const VisualOutputBuilderView: React.FC = () => {
     () => draft.fields.find((f) => f.id === selectedFieldId) || draft.fields[0] || null,
     [draft.fields, selectedFieldId]
   );
+
+  //Navigate directly to affected field in Step 2 or Step 3
+  const jumpToFieldByTechnicalName = (techName?: string, targetStep = 2) => {
+    if (techName) {
+      const found = draft.fields.find(
+        (f) => f.technicalName.toLowerCase() === techName.toLowerCase()
+      );
+      if (found) {
+        setSelectedFieldId(found.id);
+      }
+    }
+    setBuilderStep(targetStep);
+  };
 
   // Field Manipulation Helpers
   const recalculateTxtPositions = (fields: StructureField[]): StructureField[] => {
@@ -289,7 +375,6 @@ export const VisualOutputBuilderView: React.FC = () => {
       return {
         ...prev,
         fields: updatedFields,
-        updatedAt: '2026-11-09',
       };
     });
   };
@@ -302,9 +387,18 @@ export const VisualOutputBuilderView: React.FC = () => {
     updateDraft((prev) => ({
       ...prev,
       fields: prev.fields.map((f) =>
-        f.id === fieldId ? { ...f, mapping: { ...f.mapping, ...mappingPatch } } : f
+        f.id === fieldId
+          ? {
+              ...f,
+              mapping: {
+                ...f.mapping,
+                ...mappingPatch,
+                mappingStatus:
+                  mappingPatch.mappingStatus ?? 'Confirmado por usuario',
+              },
+            }
+          : f
       ),
-      updatedAt: '2026-11-09',
     }));
   };
 
@@ -316,10 +410,12 @@ export const VisualOutputBuilderView: React.FC = () => {
       ? (lastField.startPosition || 1) + Math.max(1, lastField.length)
       : 1;
     const defaultLength = 15;
-    const defaultSourceCol =
-      selectedDataContract.fields[nextOrder % selectedDataContract.fields.length]?.name ||
-      'id_obligacion';
+    const defaultUnit =
+      selectedOutputType.family === 'TXT'
+        ? selectedOutputType.txtParams?.lengthUnit || 'Caracteres'
+        : 'Caracteres';
 
+    // New fields start unassigned ('Sin asignar') instead of guessing a column by modulo index!
     const newField: StructureField = {
       id: `FLD-${Date.now().toString(36).toUpperCase()}`,
       technicalName: `campo_${nextOrder}`,
@@ -330,7 +426,7 @@ export const VisualOutputBuilderView: React.FC = () => {
       dataType: 'Texto',
       physicalType: `VARCHAR(${defaultLength})`,
       length: defaultLength,
-      lengthUnit: 'Caracteres',
+      lengthUnit: defaultUnit,
       required: true,
       nullable: false,
       startPosition: startPos,
@@ -347,10 +443,11 @@ export const VisualOutputBuilderView: React.FC = () => {
       mapping: {
         transformationKind: 'Directo',
         sourceContractId: selectedDataContract.id,
-        sourceField: defaultSourceCol,
-        expression: defaultSourceCol,
+        sourceField: '',
+        expression: '',
         isParameterizedPoint: false,
         emptyTreatment: 'Error bloqueante',
+        mappingStatus: 'Sin asignar',
       },
     };
 
@@ -359,7 +456,10 @@ export const VisualOutputBuilderView: React.FC = () => {
       fields: [...prev.fields, newField],
     }));
     setSelectedFieldId(newField.id);
-    notify('info', `Campo "${newField.technicalName}" agregado a la estructura.`);
+    notify(
+      'info',
+      `Campo "${newField.technicalName}" agregado en Paso 2. Asigne su columna de origen en el Paso 3.`
+    );
   };
 
   const handleDuplicateField = (field: StructureField) => {
@@ -432,31 +532,141 @@ export const VisualOutputBuilderView: React.FC = () => {
     notify('success', 'Posiciones iniciales y finales recalculadas secuencialmente sin solapamientos.');
   };
 
+  const handleApplyLengthUnitToAllFields = (unit: 'Caracteres' | 'Bytes') => {
+    if (isImmutable) return;
+    updateDraft((prev) => ({
+      ...prev,
+      fields: prev.fields.map((f) => ({ ...f, lengthUnit: unit })),
+    }));
+    if (selectedOutputType.txtParams) {
+      saveOutputType({
+        ...selectedOutputType,
+        txtParams: { ...selectedOutputType.txtParams, lengthUnit: unit },
+      });
+    }
+    notify('info', `Unidad de medición actualizada a "${unit}" en todos los campos de la estructura.`);
+  };
+
   const handleAutoMapFields = () => {
     if (isImmutable) return;
-    updateDraft((prev) => {
-      const sourceCols = selectedDataContract.fields;
-      const mapped = prev.fields.map((f) => {
-        if (f.mapping.sourceField && f.mapping.sourceField.trim() !== '') return f;
-        const match =
-          sourceCols.find((sc) => sc.name === f.technicalName) ||
-          sourceCols.find((sc) =>
-            f.technicalName.toLowerCase().includes(sc.name.split('_')[0])
-          ) ||
-          sourceCols[0];
-        return {
-          ...f,
-          mapping: {
-            ...f.mapping,
-            sourceContractId: selectedDataContract.id,
-            sourceField: match?.name || 'id_obligacion',
-            expression: match?.name || 'id_obligacion',
-          },
-        };
-      });
-      return { ...prev, fields: mapped };
-    });
-    notify('success', 'Orígenes de datos asignados automáticamente según el contrato de datos.');
+    const result = proposeFieldMappings(
+      draft.fields,
+      selectedDataContract.fields,
+      selectedDataContract.id,
+      overwriteConfirmedMappings
+    );
+    updateDraft((prev) => ({
+      ...prev,
+      fields: result.updatedFields,
+    }));
+
+    if (result.unmatchedCount > 0) {
+      notify(
+        'warning',
+        `Asignación automática: ${result.matchedCount} propuesta(s) por similitud semántica (requieren confirmación) y ${result.unmatchedCount} campo(s) sin coincidencia confiable en el contrato que requieren selección manual.`
+      );
+    } else {
+      notify(
+        'info',
+        `Asignación automática: ${result.matchedCount} propuesta(s) generadas para revisión (${result.preservedCount} asignaciones manuales conservadas). Confirme cada correspondencia.`
+      );
+    }
+  };
+
+  const handleConfirmAllProposedMappings = () => {
+    if (isImmutable) return;
+    updateDraft((prev) => ({
+      ...prev,
+      fields: prev.fields.map((f) =>
+        f.mapping.mappingStatus === 'Propuesta automática (Requiere confirmación)'
+          ? {
+              ...f,
+              mapping: {
+                ...f.mapping,
+                mappingStatus: 'Confirmado por usuario',
+              },
+            }
+          : f
+      ),
+    }));
+    notify('success', 'Todas las propuestas automáticas de mapeo han sido confirmadas.');
+  };
+
+  const handleAddGuidedRule = () => {
+    if (isImmutable) return;
+    const targetField =
+      guidedRuleOperator === 'RECORD_COUNT'
+        ? 'Conjunto de registros'
+        : guidedRuleField || draft.fields[0]?.technicalName || 'id_obligacion';
+
+    let conditionExpression = '';
+    let defaultName = '';
+    let defaultMsg = '';
+    let layer: ValidationLayer = 'Representación y archivo';
+
+    switch (guidedRuleOperator) {
+      case 'NOT_NULL':
+        conditionExpression = `NOT_NULL(${targetField})`;
+        defaultName = `Presencia obligatoria en ${targetField}`;
+        defaultMsg = `El campo ${targetField} no puede estar vacío.`;
+        break;
+      case 'MAX_LEN':
+        conditionExpression = `LEN_CHARS(${targetField}) <= ${Number(guidedRuleParam) || 10}`;
+        defaultName = `Longitud máxima de ${targetField} (<= ${Number(guidedRuleParam) || 10})`;
+        defaultMsg = `El campo ${targetField} excede el límite de ${Number(guidedRuleParam) || 10} caracteres.`;
+        break;
+      case 'MIN_NUM':
+        conditionExpression = `${targetField} >= ${Number(guidedRuleParam) || 0}`;
+        defaultName = `Rango mínimo en ${targetField} (>= ${Number(guidedRuleParam) || 0})`;
+        defaultMsg = `El valor numérico de ${targetField} es inferior al mínimo permitido (${Number(guidedRuleParam) || 0}).`;
+        break;
+      case 'NOT_ZERO':
+        conditionExpression = `${targetField} != 0`;
+        defaultName = `Rechazo de valor cero en ${targetField}`;
+        defaultMsg = `El campo ${targetField} no admite valor igual a cero (0).`;
+        break;
+      case 'REGEX':
+        conditionExpression = `MATCH_REGEX(${targetField}, '${guidedRuleParam || '^[0-9]+$'}')`;
+        defaultName = `Formato regular en ${targetField}`;
+        defaultMsg = `El valor de ${targetField} no cumple el patrón requerido (${guidedRuleParam || '^[0-9]+$'}).`;
+        break;
+      case 'IN_LIST':
+        conditionExpression = `IN_LIST(${targetField}, '${guidedRuleParam || 'VIGENTE,VENCIDO'}')`;
+        defaultName = `Catálogo permitido en ${targetField}`;
+        defaultMsg = `El valor de ${targetField} no pertenece a la lista autorizada (${guidedRuleParam || 'VIGENTE,VENCIDO'}).`;
+        break;
+      case 'RECORD_COUNT':
+        conditionExpression = `RECORD_COUNT >= ${Number(guidedRuleParam) || 1}`;
+        defaultName = `Mínimo de registros en el archivo (>= ${Number(guidedRuleParam) || 1})`;
+        defaultMsg = `El archivo debe contener al menos ${Number(guidedRuleParam) || 1} registro(s).`;
+        layer = 'Coherencia de conjunto';
+        break;
+    }
+
+    const nextNum = draft.validationRules.length + 1;
+    const newRule: OutputValidationRule = {
+      id: `VR-${Date.now()}`,
+      code: `VAL-USR-0${nextNum}`,
+      name: defaultName,
+      layer,
+      targetFieldOrRole: targetField,
+      conditionExpression,
+      severity: guidedRuleSeverity,
+      isNormativeProtected: false,
+      owner: 'Política de salida y entrega',
+      diagnosticMessage: guidedRuleMessage.trim() || defaultMsg,
+      enabled: true,
+    };
+
+    updateDraft((p) => ({
+      ...p,
+      validationRules: [...p.validationRules, newRule],
+    }));
+    setGuidedRuleMessage('');
+    notify(
+      'success',
+      `Regla "${newRule.code}" (${newRule.conditionExpression}) agregada y evaluada sobre los datos de prueba.`
+    );
   };
 
   const handleDownloadPreviewArtifact = () => {
@@ -464,7 +674,7 @@ export const VisualOutputBuilderView: React.FC = () => {
     if (blockingIssuesCount > 0) {
       notify(
         'error',
-        'Corrija los errores bloqueantes de estructura o mapeo antes de descargar el archivo de prueba.'
+        'Corrija los errores bloqueantes de estructura, mapeo o reglas antes de descargar el archivo.'
       );
       return;
     }
@@ -477,7 +687,7 @@ export const VisualOutputBuilderView: React.FC = () => {
     URL.revokeObjectURL(url);
     notify(
       'success',
-      `Archivo de prueba "${compiledResult.fileName}" generado y descargado correctamente.`
+      `Archivo físico "${compiledResult.fileName}" generado y descargado correctamente.`
     );
   };
 
@@ -485,14 +695,82 @@ export const VisualOutputBuilderView: React.FC = () => {
     saveConfiguredOutput(draft, false);
   };
 
+  const handleConfirmOutputTypeChange = () => {
+    if (!pendingOutputTypeId) return;
+    const nextType = outputTypes.find((t) => t.id === pendingOutputTypeId);
+    if (!nextType) {
+      setPendingOutputTypeId(null);
+      return;
+    }
+    const cleanExt = nextType.extension.replace(/^\./, '');
+    updateDraft((p) => {
+      const basePattern = p.composition.fileNamePattern.replace(/\.[a-z0-9]+$/i, '');
+      return {
+        ...p,
+        outputTypeId: nextType.id,
+        composition: {
+          ...p.composition,
+          extension: cleanExt,
+          encoding:
+            nextType.family === 'AVRO'
+              ? 'Binario'
+              : p.composition.encoding === 'Binario'
+              ? 'UTF-8'
+              : p.composition.encoding,
+          delimiter:
+            nextType.family === 'CSV'
+              ? ';'
+              : nextType.family === 'TXT'
+              ? 'Ancho fijo'
+              : 'N/A',
+          packageMembers: p.composition.packageMembers.map((m) =>
+            m.role === 'Principal'
+              ? { ...m, fileNamePattern: `${basePattern}.${cleanExt}` }
+              : m
+          ),
+        },
+        fields:
+          nextType.family === 'TXT'
+            ? recalculateTxtPositions(p.fields)
+            : p.fields,
+      };
+    });
+    setPendingOutputTypeId(null);
+    notify(
+      'info',
+      `Tipo de archivo cambiado a ${nextType.family} (${nextType.name}). Se conservaron los ${draft.fields.length} campos y sus orígenes de datos.`
+    );
+  };
+
+  const relatedRuns = useMemo(
+    () =>
+      executionRuns.filter(
+        (r) =>
+          r.configuredOutputId === draft.id ||
+          (draft.baseOutputId && r.configuredOutputId === draft.baseOutputId)
+      ),
+    [executionRuns, draft.id, draft.baseOutputId]
+  );
+
+  const selectedDeliveryChannel = useMemo(
+    () =>
+      deliveryChannels.find((c) => c.id === draft.defaultDeliveryChannelId) ||
+      deliveryChannels[0],
+    [deliveryChannels, draft.defaultDeliveryChannelId]
+  );
+
   return (
     <div className="space-y-4">
       {/* Top Bar: Output Selector, Status, and Save Action */}
       <div className="bg-white border border-slate-200 rounded-md p-4 flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3">
         <div className="flex flex-wrap items-center gap-3">
           <div>
-            <span className="text-[11px] font-bold uppercase tracking-wider text-[#1E4E8C] block">
-              C. Diseñador de salidas · Asistente Guiado en 7 Pasos
+            <span className="text-[11px] font-bold uppercase tracking-wider text-[#1E4E8C] flex items-center gap-1">
+              <span>C. Diseñador de salidas · Asistente Guiado en 7 Pasos</span>
+              <HelpTooltip
+                title="Diseñador de salidas en 7 pasos"
+                description="Permite configurar una salida regulatoria desde sus datos generales hasta su publicación. Todos los cambios en estado Borrador o En revisión se guardan automáticamente en el navegador y actualizan en tiempo real la vista previa."
+              />
             </span>
             <div className="flex flex-wrap items-center gap-2 mt-1">
               <select
@@ -521,9 +799,11 @@ export const VisualOutputBuilderView: React.FC = () => {
                 className={`px-2.5 py-1 rounded text-xs font-semibold border ${
                   draft.status === 'Publicada'
                     ? 'bg-emerald-50 text-emerald-900 border-emerald-300'
+                    : draft.status === 'Aprobada'
+                    ? 'bg-blue-50 text-blue-900 border-blue-300'
                     : draft.status === 'En revisión'
                     ? 'bg-amber-50 text-amber-900 border-amber-300'
-                    : 'bg-blue-50 text-blue-900 border-blue-300'
+                    : 'bg-slate-100 text-slate-900 border-slate-300'
                 }`}
               >
                 Estado: {draft.status} (v{draft.version})
@@ -534,42 +814,58 @@ export const VisualOutputBuilderView: React.FC = () => {
 
         <div className="flex flex-wrap items-center gap-2">
           {isImmutable ? (
-            <button
-              type="button"
-              onClick={() => setShowRevisionModal(true)}
-              className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded text-xs font-bold bg-amber-500 text-slate-950 hover:bg-amber-400 transition-colors cursor-pointer"
-            >
-              <GitBranch className="w-4 h-4" />
-              Crear nueva revisión para editar
-            </button>
+            <>
+              <HelpTooltip
+                variant="disabled-reason"
+                align="right"
+                label="¿Por qué está en modo consulta?"
+                title="Versión protegida contra edición directa"
+                description={`La versión v${draft.version} se encuentra en estado "${draft.status}". En plataformas regulatorias, las versiones aprobadas o publicadas son inmutables para garantizar trazabilidad histórica.`}
+                disabledReason={`Estado actual: ${draft.status} (Inmutable).`}
+                enableRequirement="Pulse 'Crear nueva revisión para editar' para generar un Borrador editable sin alterar la versión publicada."
+              />
+              <button
+                type="button"
+                onClick={() => setShowRevisionModal(true)}
+                className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded text-xs font-bold bg-amber-500 text-slate-950 hover:bg-amber-400 transition-colors cursor-pointer"
+              >
+                <GitBranch className="w-4 h-4" />
+                Crear nueva revisión para editar
+              </button>
+            </>
           ) : (
-            <button
-              type="button"
-              onClick={handleManualSave}
-              className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded text-xs font-bold bg-[#1E4E8C] text-white hover:bg-[#163A69] transition-colors cursor-pointer"
-            >
-              <Save className="w-3.5 h-3.5" />
-              Guardar cambios
-            </button>
+            <div className="flex items-center gap-2">
+              <span className="text-[11px] text-emerald-800 bg-emerald-50 border border-emerald-200 px-2.5 py-1 rounded font-mono">
+                Autoguardado: {lastSavedAt}
+              </span>
+              <button
+                type="button"
+                onClick={handleManualSave}
+                className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded text-xs font-bold bg-[#1E4E8C] text-white hover:bg-[#163A69] transition-colors cursor-pointer"
+              >
+                <Save className="w-3.5 h-3.5" />
+                Guardar cambios
+              </button>
+            </div>
           )}
         </div>
       </div>
 
-      {/* Immutability Warning Banner when viewing a Published/Approved output (Scenario 4) */}
+      {/* Immutability Warning Banner when viewing a Published/Approved output */}
       {isImmutable && (
         <div className="bg-amber-50 border border-amber-300 rounded-md p-3.5 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 text-xs text-amber-950">
           <div className="flex items-start gap-2.5">
             <Lock className="w-4 h-4 text-amber-800 shrink-0 mt-0.5" />
             <div>
               <div className="font-bold">
-                Esta versión (v{draft.version}) está {draft.status} y protegida contra edición directa
+                Modo consulta: Esta versión (v{draft.version}) está {draft.status} y protegida contra edición directa
               </div>
               <p className="mt-0.5 text-amber-900">
                 {linkedAssociations.length > 0
                   ? `Actualmente está asociada a ${linkedAssociations.length} formato(s) regulatorio(s) (${linkedAssociations
                       .map((a) => regulatoryFormats.find((f) => f.id === a.formatId)?.code || a.code)
-                      .join(', ')}). Para realizar cambios sin afectar las entregas vigentes, cree una nueva revisión en borrador.`
-                  : 'Las versiones publicadas no se modifican directamente para preservar la trazabilidad histórica.'}
+                      .join(', ')}). Para modificar campos, mapeos o reglas sin afectar las entregas vigentes, cree una nueva revisión en borrador.`
+                  : 'Las versiones aprobadas o publicadas no se modifican directamente para preservar la auditoría regulatoria.'}
               </p>
             </div>
           </div>
@@ -605,7 +901,10 @@ export const VisualOutputBuilderView: React.FC = () => {
                 <div className="flex items-center justify-between gap-1">
                   <span className="text-[11px] font-bold leading-tight">{s.title}</span>
                   {stepIssues.length > 0 && (
-                    <span className="px-1.5 py-0.2 rounded text-[10px] font-mono font-bold bg-rose-600 text-white">
+                    <span
+                      title={`${stepIssues.length} hallazgo(s) pendiente(s) en este paso`}
+                      className="px-1.5 py-0.2 rounded text-[10px] font-mono font-bold bg-rose-600 text-white"
+                    >
                       {stepIssues.length}
                     </span>
                   )}
@@ -632,14 +931,52 @@ export const VisualOutputBuilderView: React.FC = () => {
                 Paso 1. Datos generales de la salida
               </h2>
               <p className="text-xs text-slate-600 mt-0.5">
-                Defina la identificación de la salida, la entidad reguladora y el tipo de archivo técnico que utilizará.
+                Defina la identificación funcional de la salida, su código técnico, la entidad supervisora y el tipo de archivo que utilizará.
               </p>
             </div>
+
+            {/* Confirmation prompt if user selected a new OutputType */}
+            {pendingOutputTypeId && (
+              <div className="p-3.5 rounded-md bg-amber-50 border border-amber-300 text-xs text-amber-950 space-y-2">
+                <div className="font-bold flex items-center gap-1.5">
+                  <AlertTriangle className="w-4 h-4 text-amber-800 shrink-0" />
+                  Confirmar cambio de tipo de archivo a{' '}
+                  {outputTypes.find((t) => t.id === pendingOutputTypeId)?.family}
+                </div>
+                <p>
+                  Al cambiar el tipo de archivo se ajustarán la extensión, el delimitador o modo posicional y los parámetros específicos del formato.{' '}
+                  <strong>
+                    Se conservarán intactos sus {draft.fields.length} campos, longitudes y mapeos del Paso 2 y Paso 3.
+                  </strong>
+                </p>
+                <div className="flex items-center gap-2 pt-1">
+                  <button
+                    type="button"
+                    onClick={handleConfirmOutputTypeChange}
+                    className="px-3 py-1 rounded bg-amber-900 text-white font-semibold hover:bg-amber-950 cursor-pointer"
+                  >
+                    Confirmar cambio de tipo
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setPendingOutputTypeId(null)}
+                    className="px-3 py-1 rounded border border-amber-400 bg-white text-amber-900 font-semibold hover:bg-amber-100 cursor-pointer"
+                  >
+                    Cancelar
+                  </button>
+                </div>
+              </div>
+            )}
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5 text-xs">
               <div className="sm:col-span-2">
                 <label className="block font-semibold text-slate-800 mb-1">
-                  Nombre de la salida *
+                  Nombre funcional de la salida *
+                  <HelpTooltip
+                    title="Nombre funcional de la salida"
+                    description="Nombre descriptivo para identificar el propósito del archivo en el catálogo y en los reportes de auditoría."
+                    example="Saldos y Cartera · Plano Delimitado CSV"
+                  />
                 </label>
                 <input
                   type="text"
@@ -653,6 +990,11 @@ export const VisualOutputBuilderView: React.FC = () => {
               <div>
                 <label className="block font-semibold text-slate-800 mb-1">
                   Código identificador *
+                  <HelpTooltip
+                    title="Código identificador único"
+                    description="Identificador corto e invariable de la salida configurada. Las nuevas revisiones conservan este mismo código cambiando únicamente el número de versión."
+                    example="DEMO-CE-02"
+                  />
                 </label>
                 <input
                   type="text"
@@ -668,28 +1010,20 @@ export const VisualOutputBuilderView: React.FC = () => {
               <div>
                 <label className="block font-semibold text-slate-800 mb-1">
                   Tipo de archivo (Tipo de salida) *
+                  <HelpTooltip
+                    title="Tipo de archivo reutilizable"
+                    description="Define la familia técnica del archivo (CSV, TXT, XML, AVRO, XBRL, PDF o XLSX) y habilita los controles específicos de esa representación."
+                    consequence="Cambiar el tipo de archivo adapta los parámetros de representación del panel derecho conservando la lista de campos."
+                  />
                 </label>
                 <select
                   aria-label="Tipo de archivo de la salida"
                   disabled={isImmutable}
                   value={draft.outputTypeId}
                   onChange={(e) => {
-                    const nextType = outputTypes.find((t) => t.id === e.target.value);
-                    if (!nextType) return;
-                    updateDraft((p) => ({
-                      ...p,
-                      outputTypeId: nextType.id,
-                      composition: {
-                        ...p.composition,
-                        extension: nextType.extension.replace('.', ''),
-                        delimiter:
-                          nextType.family === 'CSV'
-                            ? ';'
-                            : nextType.family === 'TXT'
-                            ? 'Ancho fijo'
-                            : 'N/A',
-                      },
-                    }));
+                    if (e.target.value !== draft.outputTypeId) {
+                      setPendingOutputTypeId(e.target.value);
+                    }
                   }}
                   className="w-full border border-slate-300 rounded px-3 py-2 bg-white font-semibold text-slate-900 disabled:bg-slate-100"
                 >
@@ -703,7 +1037,7 @@ export const VisualOutputBuilderView: React.FC = () => {
 
               <div>
                 <label className="block font-semibold text-slate-800 mb-1">
-                  Entidad reguladora *
+                  Entidad supervisora / Reguladora *
                 </label>
                 <input
                   type="text"
@@ -740,6 +1074,10 @@ export const VisualOutputBuilderView: React.FC = () => {
               <div>
                 <label className="block font-semibold text-slate-800 mb-1">
                   Versión de la configuración
+                  <HelpTooltip
+                    title="Número de versión"
+                    description="Identifica la revisión específica de esta salida (ej. 1.4, 2.0, 3.1). Permite que distintos formatos regulatorios apunten a versiones específicas sin afectarse entre sí."
+                  />
                 </label>
                 <input
                   type="text"
@@ -754,7 +1092,11 @@ export const VisualOutputBuilderView: React.FC = () => {
 
               <div>
                 <label className="block font-semibold text-slate-800 mb-1">
-                  Vigencia desde
+                  Vigencia desde (AAAA-MM-DD)
+                  <HelpTooltip
+                    title="Fecha de inicio de vigencia"
+                    description="Fecha a partir de la cual esta versión de la salida es elegible para ser utilizada en entregas regulatorias."
+                  />
                 </label>
                 <input
                   type="text"
@@ -769,7 +1111,7 @@ export const VisualOutputBuilderView: React.FC = () => {
 
               <div className="sm:col-span-2">
                 <label className="block font-semibold text-slate-800 mb-1">
-                  Descripción funcional
+                  Descripción funcional y alcance normativo
                 </label>
                 <textarea
                   rows={3}
@@ -784,70 +1126,87 @@ export const VisualOutputBuilderView: React.FC = () => {
             </div>
           </div>
 
-          {/* Right Panel in Step 1: Specific Format Parameters for Selected File Type */}
+          {/* Right Panel in Step 1: Format-Specific Parameters Tailored to Selected Family */}
           <div className="lg:col-span-5 bg-white border border-slate-200 rounded-md p-5 space-y-4">
             <div className="border-b border-slate-200 pb-3">
               <span className="text-[11px] font-bold uppercase tracking-wider text-[#1E4E8C]">
-                Parámetros del archivo ({selectedOutputType.family})
+                Parámetros específicos del formato ({selectedOutputType.family})
               </span>
-              <h3 className="text-sm font-bold text-slate-900 mt-0.5">
-                Características generales de representación
+              <h3 className="text-sm font-bold text-slate-900 mt-0.5 flex items-center gap-1">
+                <span>Propiedades técnicas del archivo {selectedOutputType.family}</span>
+                <HelpTooltip
+                  align="right"
+                  title={`Parámetros de familia ${selectedOutputType.family}`}
+                  description="Aquí solo se muestran las propiedades técnicas que realmente aplican al formato de archivo seleccionado y que intervienen en su generación o validación de esquema."
+                />
               </h3>
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
-              <div>
-                <label className="block font-semibold text-slate-700 mb-1">
-                  Codificación de caracteres
-                </label>
-                <select
-                  disabled={isImmutable}
-                  value={draft.composition.encoding}
-                  onChange={(e) =>
-                    updateDraft((p) => ({
-                      ...p,
-                      composition: {
-                        ...p.composition,
-                        encoding: e.target.value as ConfiguredOutput['composition']['encoding'],
-                      },
-                    }))
-                  }
-                  className="w-full border border-slate-300 rounded px-2.5 py-1.5 bg-white"
-                >
-                  <option value="UTF-8">UTF-8</option>
-                  <option value="UTF-8 con BOM">UTF-8 con BOM</option>
-                  <option value="ISO-8859-1">ISO-8859-1 (Latin-1)</option>
-                  <option value="Binario">Binario</option>
-                </select>
-              </div>
+            {/* CSV Specific Parameters */}
+            {selectedOutputType.family === 'CSV' && (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+                <div>
+                  <label className="block font-semibold text-slate-700 mb-1">
+                    Codificación de caracteres
+                    <HelpTooltip
+                      title="Codificación CSV"
+                      description="Define el juego de caracteres del archivo de texto. UTF-8 es el estándar recomendado."
+                    />
+                  </label>
+                  <select
+                    disabled={isImmutable}
+                    value={draft.composition.encoding}
+                    onChange={(e) =>
+                      updateDraft((p) => ({
+                        ...p,
+                        composition: {
+                          ...p.composition,
+                          encoding: e.target.value as ConfiguredOutput['composition']['encoding'],
+                        },
+                      }))
+                    }
+                    className="w-full border border-slate-300 rounded px-2.5 py-1.5 bg-white"
+                  >
+                    <option value="UTF-8">UTF-8</option>
+                    <option value="UTF-8 con BOM">UTF-8 con BOM</option>
+                    <option value="ISO-8859-1">ISO-8859-1 (Latin-1)</option>
+                  </select>
+                </div>
 
-              <div>
-                <label className="block font-semibold text-slate-700 mb-1">
-                  Separador decimal
-                </label>
-                <select
-                  disabled={isImmutable}
-                  value={draft.composition.decimalSeparator}
-                  onChange={(e) =>
-                    updateDraft((p) => ({
-                      ...p,
-                      composition: {
-                        ...p.composition,
-                        decimalSeparator: e.target.value as ',' | '.',
-                      },
-                    }))
-                  }
-                  className="w-full border border-slate-300 rounded px-2.5 py-1.5 bg-white font-mono"
-                >
-                  <option value=",">Coma (,)</option>
-                  <option value=".">Punto (.)</option>
-                </select>
-              </div>
+                <div>
+                  <label className="block font-semibold text-slate-700 mb-1">
+                    Separador decimal
+                    <HelpTooltip
+                      title="Separador decimal en importes"
+                      description="Define si los campos de tipo Decimal se formatean con coma (1234,50) o con punto (1234.50) en el archivo CSV."
+                    />
+                  </label>
+                  <select
+                    disabled={isImmutable}
+                    value={draft.composition.decimalSeparator}
+                    onChange={(e) =>
+                      updateDraft((p) => ({
+                        ...p,
+                        composition: {
+                          ...p.composition,
+                          decimalSeparator: e.target.value as ',' | '.',
+                        },
+                      }))
+                    }
+                    className="w-full border border-slate-300 rounded px-2.5 py-1.5 bg-white font-mono"
+                  >
+                    <option value=",">Coma (,) — Ej: 1234,50</option>
+                    <option value=".">Punto (.) — Ej: 1234.50</option>
+                  </select>
+                </div>
 
-              {selectedOutputType.family === 'CSV' && (
                 <div className="sm:col-span-2">
                   <label className="block font-semibold text-slate-700 mb-1">
-                    Separador de columnas (CSV)
+                    Separador de columnas (Delimitador CSV)
+                    <HelpTooltip
+                      title="Delimitador de columnas"
+                      description="Carácter que separa cada campo dentro de una línea CSV. Si un valor de texto contiene este carácter, el motor lo protege entre comillas según RFC 4180."
+                    />
                   </label>
                   <select
                     disabled={isImmutable}
@@ -866,54 +1225,575 @@ export const VisualOutputBuilderView: React.FC = () => {
                     <option value=";">Punto y coma (;)</option>
                     <option value=",">Coma (,)</option>
                     <option value="|">Barra vertical (|)</option>
-                    <option value="&#9;">Tabulador (TAB)</option>
+                    <option value={'\t'}>Tabulador (TAB)</option>
                   </select>
                 </div>
-              )}
 
-              <div className="sm:col-span-2 flex flex-wrap gap-4 pt-2">
-                <label className="inline-flex items-center gap-2 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    disabled={isImmutable}
-                    checked={draft.composition.includeHeader}
-                    onChange={(e) =>
-                      updateDraft((p) => ({
-                        ...p,
-                        composition: {
-                          ...p.composition,
-                          includeHeader: e.target.checked,
-                        },
-                      }))
-                    }
-                  />
-                  <span>Incluir fila/registro de encabezado</span>
-                </label>
+                <div className="sm:col-span-2 space-y-2 pt-2 border-t border-slate-100">
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      disabled={isImmutable}
+                      checked={draft.composition.includeHeader}
+                      onChange={(e) =>
+                        updateDraft((p) => ({
+                          ...p,
+                          composition: {
+                            ...p.composition,
+                            includeHeader: e.target.checked,
+                          },
+                        }))
+                      }
+                    />
+                    <span>Incluir primera línea con nombres técnicos de columnas (Encabezado)</span>
+                  </label>
 
-                <label className="inline-flex items-center gap-2 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    disabled={isImmutable}
-                    checked={draft.composition.includeFooter}
-                    onChange={(e) =>
-                      updateDraft((p) => ({
-                        ...p,
-                        composition: {
-                          ...p.composition,
-                          includeFooter: e.target.checked,
-                        },
-                      }))
-                    }
-                  />
-                  <span>Incluir registro final de control / totales</span>
-                </label>
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      disabled={isImmutable}
+                      checked={draft.composition.includeFooter}
+                      onChange={(e) =>
+                        updateDraft((p) => ({
+                          ...p,
+                          composition: {
+                            ...p.composition,
+                            includeFooter: e.target.checked,
+                          },
+                        }))
+                      }
+                    />
+                    <span>Incluir línea final CONTROL_TOTAL con conteo de filas y suma de importes</span>
+                  </label>
+                </div>
               </div>
-            </div>
+            )}
+
+            {/* TXT Specific Parameters */}
+            {selectedOutputType.family === 'TXT' && (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+                <div>
+                  <label className="block font-semibold text-slate-700 mb-1">
+                    Codificación de caracteres
+                  </label>
+                  <select
+                    disabled={isImmutable}
+                    value={draft.composition.encoding}
+                    onChange={(e) =>
+                      updateDraft((p) => ({
+                        ...p,
+                        composition: {
+                          ...p.composition,
+                          encoding: e.target.value as ConfiguredOutput['composition']['encoding'],
+                        },
+                      }))
+                    }
+                    className="w-full border border-slate-300 rounded px-2.5 py-1.5 bg-white"
+                  >
+                    <option value="UTF-8">UTF-8</option>
+                    <option value="ISO-8859-1">ISO-8859-1 (Latin-1)</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block font-semibold text-slate-700 mb-1">
+                    Modalidad TXT
+                  </label>
+                  <select
+                    disabled={isImmutable}
+                    value={draft.composition.delimiter === 'Ancho fijo' ? 'Ancho fijo' : '|'}
+                    onChange={(e) =>
+                      updateDraft((p) => ({
+                        ...p,
+                        composition: {
+                          ...p.composition,
+                          delimiter: e.target.value === 'Ancho fijo' ? 'Ancho fijo' : '|',
+                        },
+                      }))
+                    }
+                    className="w-full border border-slate-300 rounded px-2.5 py-1.5 bg-white font-semibold"
+                  >
+                    <option value="Ancho fijo">Posicional de ancho fijo</option>
+                    <option value="|">Delimitado por barra vertical (|)</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block font-semibold text-slate-700 mb-1">
+                    Unidad de posición y longitud
+                    <HelpTooltip
+                      title="Medición en Caracteres vs Bytes UTF-8"
+                      description="En archivos planos TXT, algunos supervisores miden las columnas por caracteres visibles y otros por bytes físicos UTF-8 (donde letras como Ñ o tildes ocupan 2 bytes)."
+                      example="La cadena 'Ana Pérez' mide 9 caracteres pero 10 bytes en UTF-8."
+                    />
+                  </label>
+                  <select
+                    disabled={isImmutable}
+                    value={draft.fields[0]?.lengthUnit || 'Caracteres'}
+                    onChange={(e) =>
+                      handleApplyLengthUnitToAllFields(e.target.value as 'Caracteres' | 'Bytes')
+                    }
+                    className="w-full border border-slate-300 rounded px-2.5 py-1.5 bg-white font-semibold"
+                  >
+                    <option value="Caracteres">Caracteres</option>
+                    <option value="Bytes">Bytes (UTF-8)</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block font-semibold text-slate-700 mb-1">
+                    Separador decimal
+                  </label>
+                  <select
+                    disabled={isImmutable}
+                    value={draft.composition.decimalSeparator}
+                    onChange={(e) =>
+                      updateDraft((p) => ({
+                        ...p,
+                        composition: {
+                          ...p.composition,
+                          decimalSeparator: e.target.value as ',' | '.',
+                        },
+                      }))
+                    }
+                    className="w-full border border-slate-300 rounded px-2.5 py-1.5 bg-white font-mono"
+                  >
+                    <option value=".">Punto (.)</option>
+                    <option value=",">Coma (,)</option>
+                  </select>
+                </div>
+
+                <div className="sm:col-span-2 space-y-2 pt-2 border-t border-slate-100">
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      disabled={isImmutable}
+                      checked={draft.composition.includeHeader}
+                      onChange={(e) =>
+                        updateDraft((p) => ({
+                          ...p,
+                          composition: {
+                            ...p.composition,
+                            includeHeader: e.target.checked,
+                          },
+                        }))
+                      }
+                    />
+                    <span>Incluir registro de cabecera institucional (Tipo 01: Entidad, Formato, Corte)</span>
+                  </label>
+
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      disabled={isImmutable}
+                      checked={draft.composition.includeFooter}
+                      onChange={(e) =>
+                        updateDraft((p) => ({
+                          ...p,
+                          composition: {
+                            ...p.composition,
+                            includeFooter: e.target.checked,
+                          },
+                        }))
+                      }
+                    />
+                    <span>Incluir registro de cierre y control (Tipo 99: Conteo y sumatoria)</span>
+                  </label>
+                </div>
+              </div>
+            )}
+
+            {/* XML Specific Parameters */}
+            {selectedOutputType.family === 'XML' && (
+              <div className="space-y-3 text-xs">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block font-semibold text-slate-700 mb-1">
+                      Declaración de codificación XML
+                    </label>
+                    <select
+                      disabled={isImmutable}
+                      value={draft.composition.encoding}
+                      onChange={(e) =>
+                        updateDraft((p) => ({
+                          ...p,
+                          composition: {
+                            ...p.composition,
+                            encoding: e.target.value as ConfiguredOutput['composition']['encoding'],
+                          },
+                        }))
+                      }
+                      className="w-full border border-slate-300 rounded px-2.5 py-1.5 bg-white font-mono"
+                    >
+                      <option value="UTF-8">UTF-8</option>
+                      <option value="ISO-8859-1">ISO-8859-1</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block font-semibold text-slate-700 mb-1">
+                      Separador decimal en importes XML
+                    </label>
+                    <select
+                      disabled={isImmutable}
+                      value={draft.composition.decimalSeparator}
+                      onChange={(e) =>
+                        updateDraft((p) => ({
+                          ...p,
+                          composition: {
+                            ...p.composition,
+                            decimalSeparator: e.target.value as ',' | '.',
+                          },
+                        }))
+                      }
+                      className="w-full border border-slate-300 rounded px-2.5 py-1.5 bg-white font-mono"
+                    >
+                      <option value=".">Punto (.) — Estándar xs:decimal</option>
+                      <option value=",">Coma (,)</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block font-semibold text-slate-700 mb-1">
+                    Nodo raíz del documento XML (&lt;Root&gt;)
+                  </label>
+                  <input
+                    type="text"
+                    disabled={isImmutable}
+                    value={selectedOutputType.xmlParams?.rootElement || 'ReporteRegulatorio'}
+                    onChange={(e) =>
+                      saveOutputType({
+                        ...selectedOutputType,
+                        xmlParams: {
+                          ...(selectedOutputType.xmlParams || {
+                            rootElement: 'ReporteRegulatorio',
+                            targetNamespace: 'urn:totalreport:regulatorio:v1',
+                            xsdSchemaVersion: 'XSD 1.0',
+                            xsdSchemaRef: 'esquema_oficial_v1.xsd',
+                            emptyElementHandling: 'xsi:nil="true"',
+                            prettyPrint: true,
+                          }),
+                          rootElement: e.target.value,
+                        },
+                      })
+                    }
+                    className="w-full border border-slate-300 rounded px-2.5 py-1.5 font-mono bg-white"
+                  />
+                </div>
+
+                <div>
+                  <label className="block font-semibold text-slate-700 mb-1">
+                    Espacio de nombres (xmlns) y esquema XSD
+                  </label>
+                  <input
+                    type="text"
+                    disabled={isImmutable}
+                    value={selectedOutputType.xmlParams?.targetNamespace || 'urn:totalreport:regulatorio:v1'}
+                    onChange={(e) =>
+                      saveOutputType({
+                        ...selectedOutputType,
+                        xmlParams: {
+                          ...(selectedOutputType.xmlParams || {
+                            rootElement: 'ReporteRegulatorio',
+                            targetNamespace: 'urn:totalreport:regulatorio:v1',
+                            xsdSchemaVersion: 'XSD 1.0',
+                            xsdSchemaRef: 'esquema_oficial_v1.xsd',
+                            emptyElementHandling: 'xsi:nil="true"',
+                            prettyPrint: true,
+                          }),
+                          targetNamespace: e.target.value,
+                        },
+                      })
+                    }
+                    className="w-full border border-slate-300 rounded px-2.5 py-1.5 font-mono bg-white"
+                  />
+                </div>
+
+                <div>
+                  <label className="block font-semibold text-slate-700 mb-1">
+                    Representación de campos opcionales vacíos
+                  </label>
+                  <select
+                    disabled={isImmutable}
+                    value={selectedOutputType.xmlParams?.emptyElementHandling || 'xsi:nil="true"'}
+                    onChange={(e) =>
+                      saveOutputType({
+                        ...selectedOutputType,
+                        xmlParams: {
+                          ...(selectedOutputType.xmlParams || {
+                            rootElement: 'ReporteRegulatorio',
+                            targetNamespace: 'urn:totalreport:regulatorio:v1',
+                            xsdSchemaVersion: 'XSD 1.0',
+                            xsdSchemaRef: 'esquema_oficial_v1.xsd',
+                            emptyElementHandling: 'xsi:nil="true"',
+                            prettyPrint: true,
+                          }),
+                          emptyElementHandling: e.target.value as
+                            | 'Omitir nodo'
+                            | 'Etiqueta vacía'
+                            | 'xsi:nil="true"',
+                        },
+                      })
+                    }
+                    className="w-full border border-slate-300 rounded px-2.5 py-1.5 bg-white"
+                  >
+                    <option value='xsi:nil="true"'>Etiqueta con atributo xsi:nil=&quot;true&quot;</option>
+                    <option value="Omitir nodo">Omitir el elemento del XML</option>
+                    <option value="Etiqueta vacía">Etiqueta vacía (&lt;Campo&gt;&lt;/Campo&gt;)</option>
+                  </select>
+                </div>
+              </div>
+            )}
+
+            {/* AVRO Specific Parameters (No text headers/footers/decimal commas!) */}
+            {selectedOutputType.family === 'AVRO' && (
+              <div className="space-y-3 text-xs">
+                <div className="p-2.5 rounded bg-blue-50 border border-blue-200 text-[11px] text-slate-800">
+                  <strong>Formato binario Apache Avro OCF:</strong> En Avro los datos se codifican en binario según el esquema JSON (<span className="font-mono">bytes / logicalType: decimal</span> y <span className="font-mono">int / date</span>). No aplican separadores de texto ni filas de encabezado/pie.
+                </div>
+
+                <div>
+                  <label className="block font-semibold text-slate-700 mb-1">
+                    Namespace del esquema Avro
+                  </label>
+                  <input
+                    type="text"
+                    disabled={isImmutable}
+                    value={selectedOutputType.avroParams?.namespace || 'co.totalreport.regulatorio'}
+                    onChange={(e) =>
+                      saveOutputType({
+                        ...selectedOutputType,
+                        avroParams: {
+                          ...(selectedOutputType.avroParams || {
+                            namespace: 'co.totalreport.regulatorio',
+                            recordName: 'CarteraRegulatoriaRecord',
+                            containerFormat: 'OCF (Object Container File)',
+                            codec: 'deflate',
+                            schemaCompatibility: 'BACKWARD',
+                            logicalDecimalSupport: true,
+                          }),
+                          namespace: e.target.value,
+                        },
+                      })
+                    }
+                    className="w-full border border-slate-300 rounded px-2.5 py-1.5 font-mono bg-white"
+                  />
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block font-semibold text-slate-700 mb-1">
+                      Nombre del Record Avro
+                    </label>
+                    <input
+                      type="text"
+                      disabled={isImmutable}
+                      value={selectedOutputType.avroParams?.recordName || 'CarteraRecord'}
+                      onChange={(e) =>
+                        saveOutputType({
+                          ...selectedOutputType,
+                          avroParams: {
+                            ...(selectedOutputType.avroParams || {
+                              namespace: 'co.totalreport.regulatorio',
+                              recordName: 'CarteraRecord',
+                              containerFormat: 'OCF (Object Container File)',
+                              codec: 'deflate',
+                              schemaCompatibility: 'BACKWARD',
+                              logicalDecimalSupport: true,
+                            }),
+                            recordName: e.target.value,
+                          },
+                        })
+                      }
+                      className="w-full border border-slate-300 rounded px-2.5 py-1.5 font-mono bg-white"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block font-semibold text-slate-700 mb-1">
+                      Compresión OCF (Codec)
+                    </label>
+                    <select
+                      disabled={isImmutable}
+                      value={selectedOutputType.avroParams?.codec || 'deflate'}
+                      onChange={(e) =>
+                        saveOutputType({
+                          ...selectedOutputType,
+                          avroParams: {
+                            ...(selectedOutputType.avroParams || {
+                              namespace: 'co.totalreport.regulatorio',
+                              recordName: 'CarteraRecord',
+                              containerFormat: 'OCF (Object Container File)',
+                              codec: 'deflate',
+                              schemaCompatibility: 'BACKWARD',
+                              logicalDecimalSupport: true,
+                            }),
+                            codec: e.target.value as 'null' | 'deflate' | 'snappy' | 'zstandard',
+                          },
+                        })
+                      }
+                      className="w-full border border-slate-300 rounded px-2.5 py-1.5 bg-white font-mono"
+                    >
+                      <option value="deflate">deflate</option>
+                      <option value="snappy">snappy</option>
+                      <option value="zstandard">zstandard</option>
+                      <option value="null">null (sin compresión)</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block font-semibold text-slate-700 mb-1">
+                    Regla de evolución de esquema (Schema Compatibility)
+                  </label>
+                  <select
+                    disabled={isImmutable}
+                    value={selectedOutputType.avroParams?.schemaCompatibility || 'BACKWARD'}
+                    onChange={(e) =>
+                      saveOutputType({
+                        ...selectedOutputType,
+                        avroParams: {
+                          ...(selectedOutputType.avroParams || {
+                            namespace: 'co.totalreport.regulatorio',
+                            recordName: 'CarteraRecord',
+                            containerFormat: 'OCF (Object Container File)',
+                            codec: 'deflate',
+                            schemaCompatibility: 'BACKWARD',
+                            logicalDecimalSupport: true,
+                          }),
+                          schemaCompatibility: e.target.value as
+                            | 'BACKWARD'
+                            | 'FORWARD'
+                            | 'FULL'
+                            | 'NONE',
+                        },
+                      })
+                    }
+                    className="w-full border border-slate-300 rounded px-2.5 py-1.5 bg-white font-mono"
+                  >
+                    <option value="BACKWARD">BACKWARD (Consumidores nuevos leen datos previos)</option>
+                    <option value="FORWARD">FORWARD</option>
+                    <option value="FULL">FULL (Bidireccional)</option>
+                    <option value="NONE">NONE</option>
+                  </select>
+                </div>
+              </div>
+            )}
+
+            {/* XBRL, PDF, XLSX Specific Parameters */}
+            {(selectedOutputType.family === 'XBRL' ||
+              selectedOutputType.family === 'PDF' ||
+              selectedOutputType.family === 'XLSX') && (
+              <div className="space-y-3 text-xs">
+                <div className="p-2.5 rounded bg-amber-50 border border-amber-200 text-[11px] text-amber-950">
+                  <strong>Alcance en navegador para {selectedOutputType.family}:</strong> Se valida la estructura lógica de campos, contextos y reglas. La generación del archivo binario final se ejecuta en el motor de servidor ({selectedOutputType.serializationEngine}).
+                </div>
+
+                {selectedOutputType.family === 'XBRL' && (
+                  <>
+                    <div>
+                      <label className="block font-semibold text-slate-700 mb-1">
+                        Punto de entrada de taxonomía (EntryPoint URI)
+                      </label>
+                      <input
+                        type="text"
+                        disabled={isImmutable}
+                        value={
+                          selectedOutputType.xbrlParams?.entryPointUri ||
+                          'http://supervision.demo.gov/taxonomia/2026/sfc_entry.xsd'
+                        }
+                        onChange={(e) =>
+                          saveOutputType({
+                            ...selectedOutputType,
+                            xbrlParams: {
+                              ...(selectedOutputType.xbrlParams || {
+                                taxonomyPackageRef: 'TAX-SFC-2026',
+                                entryPointUri: '',
+                                defaultEntityScheme: 'http://supervision.demo.gov/entidades',
+                                periodType: 'instant',
+                                dimensionsEnabled: true,
+                                allowTaxonomyExtensions: false,
+                                unitsConfigured: ['COP'],
+                              }),
+                              entryPointUri: e.target.value,
+                            },
+                          })
+                        }
+                        className="w-full border border-slate-300 rounded px-2.5 py-1.5 font-mono bg-white"
+                      />
+                    </div>
+                    <div>
+                      <label className="block font-semibold text-slate-700 mb-1">
+                        Esquema de identificación de entidad (Entity Scheme)
+                      </label>
+                      <input
+                        type="text"
+                        disabled={isImmutable}
+                        value={
+                          selectedOutputType.xbrlParams?.defaultEntityScheme ||
+                          'http://supervision.demo.gov/entidades'
+                        }
+                        onChange={(e) =>
+                          saveOutputType({
+                            ...selectedOutputType,
+                            xbrlParams: {
+                              ...(selectedOutputType.xbrlParams || {
+                                taxonomyPackageRef: 'TAX-SFC-2026',
+                                entryPointUri: 'http://supervision.demo.gov/taxonomia/2026/sfc_entry.xsd',
+                                defaultEntityScheme: '',
+                                periodType: 'instant',
+                                dimensionsEnabled: true,
+                                allowTaxonomyExtensions: false,
+                                unitsConfigured: ['COP'],
+                              }),
+                              defaultEntityScheme: e.target.value,
+                            },
+                          })
+                        }
+                        className="w-full border border-slate-300 rounded px-2.5 py-1.5 font-mono bg-white"
+                      />
+                    </div>
+                  </>
+                )}
+
+                {(selectedOutputType.family === 'PDF' || selectedOutputType.family === 'XLSX') && (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label className="block font-semibold text-slate-700 mb-1">
+                        Estándar documental
+                      </label>
+                      <input
+                        type="text"
+                        disabled
+                        value={
+                          selectedOutputType.family === 'XLSX'
+                            ? 'OpenXML SpreadsheetML (.xlsx)'
+                            : selectedOutputType.pdfParams?.pdfStandard || 'PDF/A-1b Preservación'
+                        }
+                        className="w-full border border-slate-200 bg-slate-100 rounded px-2.5 py-1.5 font-mono"
+                      />
+                    </div>
+                    <div>
+                      <label className="block font-semibold text-slate-700 mb-1">
+                        Estado de certificación
+                      </label>
+                      <input
+                        type="text"
+                        disabled
+                        value={selectedOutputType.supportStatus}
+                        className="w-full border border-slate-200 bg-slate-100 rounded px-2.5 py-1.5 font-semibold"
+                      />
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         </div>
       )}
 
-      {/* STEP 2: ESTRUCTURA DEL ARCHIVO (Simultaneous Table + Property Editor + Live Preview) */}
+      {/* STEP 2: ESTRUCTURA DEL ARCHIVO */}
       {builderStep === 2 && (
         <div className="space-y-4">
           {/* Family-Specific Visual Structure Representation Banner (TXT positional ruler / XML tree) */}
@@ -921,27 +1801,48 @@ export const VisualOutputBuilderView: React.FC = () => {
             <div className="bg-white border border-slate-200 rounded-md p-4 space-y-2.5">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div>
-                  <span className="text-[11px] font-bold uppercase tracking-wider text-[#1E4E8C]">
-                    Mapa visual de posiciones de ancho fijo (TXT)
+                  <span className="text-[11px] font-bold uppercase tracking-wider text-[#1E4E8C] flex items-center gap-1">
+                    <span>Mapa visual de posiciones de ancho fijo (TXT)</span>
+                    <HelpTooltip
+                      title="Cálculo de posiciones en ancho fijo"
+                      description="Cada campo ocupa un segmento exacto [Inicio..Fin]. La longitud se mide en Caracteres o Bytes UTF-8 según lo configurado en la unidad de medida. Nunca se truncan datos silenciosamente."
+                    />
                   </span>
                   <h3 className="text-xs font-bold text-slate-900">
-                    Longitud total acumulada del registro:{' '}
-                    <span className="font-mono">
+                    Longitud total acumulada del registro de detalle:{' '}
+                    <span className="font-mono text-[#1E4E8C]">
                       {draft.fields.reduce((acc, f) => acc + Math.max(0, f.length), 0)}
                     </span>{' '}
-                    caracteres
+                    {(draft.fields[0]?.lengthUnit || 'Caracteres').toLowerCase()}
                   </h3>
                 </div>
-                {!isImmutable && (
-                  <button
-                    type="button"
-                    onClick={handleRecalculateAllTxtPositions}
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded bg-blue-50 border border-blue-300 text-[#1E4E8C] hover:bg-blue-100 text-xs font-semibold cursor-pointer"
-                  >
-                    <Wand2 className="w-3.5 h-3.5" />
-                    Recalcular posiciones TXT automáticamente
-                  </button>
-                )}
+                <div className="flex flex-wrap items-center gap-2">
+                  <div className="flex items-center gap-1.5 text-xs">
+                    <span className="text-slate-600 font-semibold">Medir posiciones en:</span>
+                    <select
+                      aria-label="Unidad de posición TXT"
+                      disabled={isImmutable}
+                      value={draft.fields[0]?.lengthUnit || 'Caracteres'}
+                      onChange={(e) =>
+                        handleApplyLengthUnitToAllFields(e.target.value as 'Caracteres' | 'Bytes')
+                      }
+                      className="border border-slate-300 rounded px-2 py-1 bg-white font-semibold text-slate-900"
+                    >
+                      <option value="Caracteres">Caracteres</option>
+                      <option value="Bytes">Bytes (UTF-8)</option>
+                    </select>
+                  </div>
+                  {!isImmutable && (
+                    <button
+                      type="button"
+                      onClick={handleRecalculateAllTxtPositions}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded bg-blue-50 border border-blue-300 text-[#1E4E8C] hover:bg-blue-100 text-xs font-semibold cursor-pointer"
+                    >
+                      <Wand2 className="w-3.5 h-3.5" />
+                      Recalcular posiciones TXT automáticamente
+                    </button>
+                  )}
+                </div>
               </div>
 
               <div className="flex flex-wrap gap-1 pt-1">
@@ -969,7 +1870,8 @@ export const VisualOutputBuilderView: React.FC = () => {
                       }`}
                     >
                       <div className="font-mono text-[10px] font-bold text-[#1E4E8C]">
-                        [{curStart}..{curEnd}] ({f.length} car.)
+                        [{curStart}..{curEnd}] ({f.length}{' '}
+                        {f.lengthUnit === 'Bytes' ? 'bytes' : 'car.'})
                       </div>
                       <div className="text-[11px] font-semibold truncate max-w-[140px]">
                         {f.technicalName}
@@ -983,18 +1885,27 @@ export const VisualOutputBuilderView: React.FC = () => {
 
           {selectedOutputType.family === 'XML' && (
             <div className="bg-white border border-slate-200 rounded-md p-4 space-y-2">
-              <div className="text-[11px] font-bold uppercase tracking-wider text-[#1E4E8C]">
-                Estructura jerárquica de nodos XML
+              <div className="text-[11px] font-bold uppercase tracking-wider text-[#1E4E8C] flex items-center gap-1">
+                <span>Estructura jerárquica de nodos y atributos XML</span>
+                <HelpTooltip
+                  title="Jerarquía XML: Elementos vs Atributos"
+                  description="Los campos marcados como 'Atributo (@campo)' se incluyen dentro de la etiqueta de apertura <Registro secuencia='1' @campo='valor'>. Los campos marcados como 'Elemento (<campo>)' se serializan como etiquetas hijas anidadas."
+                />
               </div>
               <div className="p-3 rounded bg-slate-50 border border-slate-200 font-mono text-xs space-y-1 text-slate-800">
                 <div className="font-bold text-[#0F1F38]">
-                  &lt;{selectedOutputType.xmlParams?.rootElement || 'ReporteRegulatorio'}&gt;
+                  &lt;{selectedOutputType.xmlParams?.rootElement || 'ReporteRegulatorio'} xmlns=&quot;{selectedOutputType.xmlParams?.targetNamespace || 'urn:totalreport:regulatorio:v1'}&quot;&gt;
                 </div>
                 <div className="pl-4 text-slate-600">
-                  &lt;Encabezado&gt;CodigoEntidad, CodigoFormato, PeriodoCorte&lt;/Encabezado&gt;
+                  &lt;Encabezado&gt;CodigoEntidad, CodigoFormato, PeriodoCorte, TotalRegistros&lt;/Encabezado&gt;
                 </div>
                 <div className="pl-4 font-bold text-[#1E4E8C]">
-                  &lt;DetalleRegistros&gt; &rarr; &lt;Registro&gt;
+                  &lt;DetalleRegistros&gt; &rarr; &lt;Registro secuencia=&quot;1..N&quot;{' '}
+                  {draft.fields
+                    .filter((f) => f.xmlNodeKind === 'Atributo')
+                    .map((a) => `${a.technicalName}="..."`)
+                    .join(' ')}
+                  &gt;
                 </div>
                 <div className="pl-8 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-1.5 pt-1">
                   {draft.fields.map((f) => {
@@ -1010,8 +1921,10 @@ export const VisualOutputBuilderView: React.FC = () => {
                             : 'bg-white border-slate-200 text-slate-700'
                         }`}
                       >
-                        {isAttr ? `@${f.technicalName} (Atributo)` : `<${f.technicalName}>`} ·{' '}
-                        {f.required ? 'Obligatorio' : 'Opcional'}
+                        {isAttr
+                          ? `@${f.technicalName} (Atributo en <Registro>)`
+                          : `<${f.technicalName}> (Elemento hijo)`}{' '}
+                        · {f.required ? '1..1' : '0..1'}
                       </button>
                     );
                   })}
@@ -1036,7 +1949,7 @@ export const VisualOutputBuilderView: React.FC = () => {
                     Tabla editable de campos ({draft.fields.length})
                   </h2>
                   <p className="text-[11px] text-slate-500">
-                    Agregue, reordene, duplique o edite directamente los campos de la estructura.
+                    Haga clic en una fila para inspeccionar todas sus propiedades en el panel derecho.
                   </p>
                 </div>
 
@@ -1060,11 +1973,14 @@ export const VisualOutputBuilderView: React.FC = () => {
                       {selectedOutputType.family === 'TXT' && (
                         <th className="py-2 px-2">Pos [Ini..Fin]</th>
                       )}
+                      {selectedOutputType.family === 'XML' && (
+                        <th className="py-2 px-2">Nodo XML</th>
+                      )}
                       <th className="py-2 px-2.5">Nombre Técnico / Etiqueta</th>
                       <th className="py-2 px-2">Tipo de Dato</th>
                       <th className="py-2 px-2">Longitud</th>
                       <th className="py-2 px-2">Oblig.</th>
-                      <th className="py-2 px-2">Origen</th>
+                      <th className="py-2 px-2">Origen (Paso 3)</th>
                       <th className="py-2 px-2.5 text-right">Acciones</th>
                     </tr>
                   </thead>
@@ -1096,6 +2012,20 @@ export const VisualOutputBuilderView: React.FC = () => {
                           {selectedOutputType.family === 'TXT' && (
                             <td className="py-2 px-2 font-mono text-[11px] text-[#1E4E8C] font-semibold tabular-nums">
                               {startPos}..{endPos}
+                            </td>
+                          )}
+
+                          {selectedOutputType.family === 'XML' && (
+                            <td className="py-2 px-2 font-mono text-[10px]">
+                              <span
+                                className={`px-1.5 py-0.5 rounded font-semibold ${
+                                  f.xmlNodeKind === 'Atributo'
+                                    ? 'bg-purple-50 text-purple-900 border border-purple-200'
+                                    : 'bg-slate-100 text-slate-800 border border-slate-300'
+                                }`}
+                              >
+                                {f.xmlNodeKind === 'Atributo' ? '@Atributo' : '<Elemento>'}
+                              </span>
                             </td>
                           )}
 
@@ -1139,23 +2069,28 @@ export const VisualOutputBuilderView: React.FC = () => {
                           </td>
 
                           <td className="py-2 px-2">
-                            <input
-                              type="number"
-                              aria-label={`Longitud campo ${f.order}`}
-                              disabled={isImmutable}
-                              value={f.length}
-                              onChange={(e) =>
-                                handleUpdateField(f.id, {
-                                  length: Number(e.target.value),
-                                })
-                              }
-                              onClick={(e) => e.stopPropagation()}
-                              className={`w-16 border rounded px-1.5 py-1 font-mono text-xs tabular-nums ${
-                                f.length <= 0
-                                  ? 'border-rose-500 bg-rose-50 text-rose-900 font-bold'
-                                  : 'border-slate-200 bg-white text-slate-900'
-                              }`}
-                            />
+                            <div className="flex items-center gap-1">
+                              <input
+                                type="number"
+                                aria-label={`Longitud campo ${f.order}`}
+                                disabled={isImmutable}
+                                value={f.length}
+                                onChange={(e) =>
+                                  handleUpdateField(f.id, {
+                                    length: Number(e.target.value),
+                                  })
+                                }
+                                onClick={(e) => e.stopPropagation()}
+                                className={`w-16 border rounded px-1.5 py-1 font-mono text-xs tabular-nums ${
+                                  f.length <= 0
+                                    ? 'border-rose-500 bg-rose-50 text-rose-900 font-bold'
+                                    : 'border-slate-200 bg-white text-slate-900'
+                                }`}
+                              />
+                              <span className="text-[10px] text-slate-400">
+                                {f.lengthUnit === 'Bytes' ? 'B' : 'c.'}
+                              </span>
+                            </div>
                           </td>
 
                           <td className="py-2 px-2 text-center">
@@ -1172,10 +2107,25 @@ export const VisualOutputBuilderView: React.FC = () => {
                           </td>
 
                           <td className="py-2 px-2 font-mono text-[11px]">
-                            {f.mapping.sourceField ? (
-                              <span className="text-slate-700">{f.mapping.sourceField}</span>
+                            {f.mapping.sourceField ||
+                            f.mapping.transformationKind === 'Constante' ||
+                            f.mapping.transformationKind === 'Variable de contexto' ||
+                            f.mapping.transformationKind === 'Concatenación tipada' ? (
+                              <span className="text-slate-700">
+                                {f.mapping.sourceField || f.mapping.expression}
+                              </span>
                             ) : (
-                              <span className="text-rose-700 font-bold">Sin origen</span>
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setSelectedFieldId(f.id);
+                                  setBuilderStep(3);
+                                }}
+                                className="text-rose-700 font-bold underline hover:text-rose-900 cursor-pointer"
+                              >
+                                Asignar en Paso 3
+                              </button>
                             )}
                           </td>
 
@@ -1237,7 +2187,7 @@ export const VisualOutputBuilderView: React.FC = () => {
                   <div className="flex items-center justify-between border-b border-slate-200 pb-2.5">
                     <div>
                       <span className="text-[10px] font-bold uppercase tracking-wider text-[#1E4E8C]">
-                        Propiedades del campo #{selectedField.order}
+                        Inspector de propiedades · Campo #{selectedField.order}
                       </span>
                       <h3 className="text-sm font-bold text-slate-900 font-mono">
                         {selectedField.technicalName}
@@ -1252,6 +2202,10 @@ export const VisualOutputBuilderView: React.FC = () => {
                     <div>
                       <label className="block font-semibold text-slate-700 mb-1">
                         Nombre técnico del campo *
+                        <HelpTooltip
+                          title="Nombre técnico"
+                          description="Identificador del campo en encabezados CSV, etiquetas XML o nombres de propiedad Avro. Evite espacios y caracteres especiales."
+                        />
                       </label>
                       <input
                         type="text"
@@ -1285,7 +2239,11 @@ export const VisualOutputBuilderView: React.FC = () => {
 
                     <div>
                       <label className="block font-semibold text-slate-700 mb-1">
-                        Tipo de dato *
+                        Tipo de dato lógico *
+                        <HelpTooltip
+                          title="Tipo de dato lógico"
+                          description="Determina las reglas de validación y formato: Fecha aplica máscara de fecha; Decimal valida precisión y escala; Entero rechaza decimales."
+                        />
                       </label>
                       <select
                         disabled={isImmutable}
@@ -1306,11 +2264,15 @@ export const VisualOutputBuilderView: React.FC = () => {
                       </select>
                     </div>
 
-                    <div className="grid grid-cols-2 gap-2">
-                      <div>
-                        <label className="block font-semibold text-slate-700 mb-1">
-                          Longitud *
-                        </label>
+                    <div>
+                      <label className="block font-semibold text-slate-700 mb-1">
+                        Longitud máxima ({selectedField.lengthUnit}) *
+                        <HelpTooltip
+                          title="Longitud máxima permitida"
+                          description="Cantidad máxima de caracteres o bytes UTF-8 admitidos. Si un valor supera esta longitud, el motor bloquea la generación e informa el campo exacto (nunca trunca silenciosamente)."
+                        />
+                      </label>
+                      <div className="flex gap-1.5">
                         <input
                           type="number"
                           disabled={isImmutable}
@@ -1322,46 +2284,117 @@ export const VisualOutputBuilderView: React.FC = () => {
                           }
                           className="w-full border border-slate-300 rounded px-2 py-1.5 font-mono"
                         />
-                      </div>
-                      <div>
-                        <label className="block font-semibold text-slate-700 mb-1">
-                          Decimales
-                        </label>
-                        <input
-                          type="number"
-                          disabled={isImmutable || selectedField.dataType !== 'Decimal'}
-                          value={selectedField.scale ?? 0}
+                        <select
+                          aria-label="Unidad de longitud del campo"
+                          disabled={isImmutable}
+                          value={selectedField.lengthUnit}
                           onChange={(e) =>
                             handleUpdateField(selectedField.id, {
-                              scale: Number(e.target.value),
+                              lengthUnit: e.target.value as 'Caracteres' | 'Bytes',
                             })
                           }
-                          className="w-full border border-slate-300 rounded px-2 py-1.5 font-mono disabled:bg-slate-100"
-                        />
+                          className="border border-slate-300 rounded px-1.5 py-1.5 bg-white text-[11px]"
+                        >
+                          <option value="Caracteres">Car.</option>
+                          <option value="Bytes">Bytes</option>
+                        </select>
                       </div>
                     </div>
+
+                    {selectedField.dataType === 'Decimal' && (
+                      <>
+                        <div>
+                          <label className="block font-semibold text-slate-700 mb-1">
+                            Precisión total (Dígitos)
+                            <HelpTooltip
+                              title="Precisión numérica"
+                              description="Cantidad total máxima de dígitos significativos (parte entera + parte decimal). Ejemplo: en decimal(18,2), la precisión es 18."
+                            />
+                          </label>
+                          <input
+                            type="number"
+                            disabled={isImmutable}
+                            value={selectedField.precision ?? selectedField.length}
+                            onChange={(e) =>
+                              handleUpdateField(selectedField.id, {
+                                precision: Number(e.target.value),
+                              })
+                            }
+                            className="w-full border border-slate-300 rounded px-2 py-1.5 font-mono"
+                          />
+                        </div>
+                        <div>
+                          <label className="block font-semibold text-slate-700 mb-1">
+                            Escala (Decimales)
+                            <HelpTooltip
+                              title="Escala decimal"
+                              description="Cantidad de posiciones decimales después de la coma o punto. Ejemplo: 2 produce '1234,50'."
+                            />
+                          </label>
+                          <input
+                            type="number"
+                            disabled={isImmutable}
+                            value={selectedField.scale ?? 2}
+                            onChange={(e) =>
+                              handleUpdateField(selectedField.id, {
+                                scale: Number(e.target.value),
+                              })
+                            }
+                            className="w-full border border-slate-300 rounded px-2 py-1.5 font-mono"
+                          />
+                        </div>
+                      </>
+                    )}
 
                     <div>
                       <label className="block font-semibold text-slate-700 mb-1">
                         Formato o máscara
+                        <HelpTooltip
+                          title="Máscara de formato"
+                          description="Para campos Fecha, define el patrón de salida (dd-MM-yyyy, yyyy-MM-dd, yyyyMMdd, dd/MM/yyyy). Para números o textos documenta la regla de representación."
+                          example="dd-MM-yyyy convierte '2026-11-30' en '30-11-2026'."
+                        />
                       </label>
-                      <input
-                        type="text"
-                        disabled={isImmutable}
-                        placeholder="Ej. dd-MM-yyyy o 0.00"
-                        value={selectedField.formatMask || ''}
-                        onChange={(e) =>
-                          handleUpdateField(selectedField.id, {
-                            formatMask: e.target.value,
-                          })
-                        }
-                        className="w-full border border-slate-300 rounded px-2.5 py-1.5 font-mono"
-                      />
+                      {selectedField.dataType === 'Fecha' ? (
+                        <select
+                          disabled={isImmutable}
+                          value={selectedField.formatMask || 'yyyy-MM-dd'}
+                          onChange={(e) =>
+                            handleUpdateField(selectedField.id, {
+                              formatMask: e.target.value,
+                            })
+                          }
+                          className="w-full border border-slate-300 rounded px-2.5 py-1.5 font-mono bg-white"
+                        >
+                          <option value="dd-MM-yyyy">dd-MM-yyyy (Ej: 30-11-2026)</option>
+                          <option value="yyyy-MM-dd">yyyy-MM-dd (Ej: 2026-11-30)</option>
+                          <option value="yyyyMMdd">yyyyMMdd (Ej: 20261130)</option>
+                          <option value="dd/MM/yyyy">dd/MM/yyyy (Ej: 30/11/2026)</option>
+                          <option value="yyyy-MM">yyyy-MM (Ej: 2026-11)</option>
+                        </select>
+                      ) : (
+                        <input
+                          type="text"
+                          disabled={isImmutable}
+                          placeholder="Ej. 0.00 o Texto estándar"
+                          value={selectedField.formatMask || ''}
+                          onChange={(e) =>
+                            handleUpdateField(selectedField.id, {
+                              formatMask: e.target.value,
+                            })
+                          }
+                          className="w-full border border-slate-300 rounded px-2.5 py-1.5 font-mono"
+                        />
+                      )}
                     </div>
 
                     <div>
                       <label className="block font-semibold text-slate-700 mb-1">
                         Valor por defecto (si vacío)
+                        <HelpTooltip
+                          title="Valor predeterminado"
+                          description="Se utiliza únicamente cuando el dato de origen viene vacío y el campo admite nulos o tiene política de valor predeterminado. Los campos obligatorios no nulos nunca se rellenan silenciosamente."
+                        />
                       </label>
                       <input
                         type="text"
@@ -1379,7 +2412,7 @@ export const VisualOutputBuilderView: React.FC = () => {
 
                     <div>
                       <label className="block font-semibold text-slate-700 mb-1">
-                        Alineación
+                        Alineación (Relleno)
                       </label>
                       <select
                         disabled={isImmutable}
@@ -1391,14 +2424,18 @@ export const VisualOutputBuilderView: React.FC = () => {
                         }
                         className="w-full border border-slate-300 rounded px-2.5 py-1.5 bg-white"
                       >
-                        <option value="Izquierda">Izquierda</option>
-                        <option value="Derecha">Derecha</option>
+                        <option value="Izquierda">Izquierda (rellena a la derecha)</option>
+                        <option value="Derecha">Derecha (rellena a la izquierda)</option>
                       </select>
                     </div>
 
                     <div>
                       <label className="block font-semibold text-slate-700 mb-1">
                         Carácter de relleno (Padding)
+                        <HelpTooltip
+                          title="Carácter de relleno"
+                          description="Completa la longitud del campo con ceros ('0') o espacios (' ') cuando el valor es más corto que la longitud declarada (ej. '123' con relleno '0' a la derecha y longitud 6 produce '000123')."
+                        />
                       </label>
                       <select
                         disabled={isImmutable}
@@ -1412,7 +2449,7 @@ export const VisualOutputBuilderView: React.FC = () => {
                       >
                         <option value="Ninguno">Sin relleno</option>
                         <option value=" ">Espacios (&apos; &apos;)</option>
-                        <option value="0">Ceros (0)</option>
+                        <option value="0">Ceros (&apos;0&apos;)</option>
                       </select>
                     </div>
 
@@ -1453,27 +2490,48 @@ export const VisualOutputBuilderView: React.FC = () => {
                     )}
 
                     {selectedOutputType.family === 'XML' && (
-                      <div className="sm:col-span-2">
-                        <label className="block font-semibold text-slate-700 mb-1">
-                          Representación en nodo XML
-                        </label>
-                        <select
-                          disabled={isImmutable}
-                          value={selectedField.xmlNodeKind || 'Elemento'}
-                          onChange={(e) =>
-                            handleUpdateField(selectedField.id, {
-                              xmlNodeKind: e.target.value as 'Elemento' | 'Atributo',
-                            })
-                          }
-                          className="w-full border border-slate-300 rounded px-2.5 py-1.5 bg-white"
-                        >
-                          <option value="Elemento">Elemento hijo (&lt;campo&gt;)</option>
-                          <option value="Atributo">Atributo del registro (@campo)</option>
-                        </select>
+                      <div className="sm:col-span-2 grid grid-cols-2 gap-2">
+                        <div>
+                          <label className="block font-semibold text-slate-700 mb-1">
+                            Tipo de nodo XML
+                          </label>
+                          <select
+                            disabled={isImmutable}
+                            value={selectedField.xmlNodeKind || 'Elemento'}
+                            onChange={(e) =>
+                              handleUpdateField(selectedField.id, {
+                                xmlNodeKind: e.target.value as 'Elemento' | 'Atributo',
+                              })
+                            }
+                            className="w-full border border-slate-300 rounded px-2.5 py-1.5 bg-white"
+                          >
+                            <option value="Elemento">Elemento hijo (&lt;campo&gt;)</option>
+                            <option value="Atributo">Atributo en &lt;Registro&gt; (@campo)</option>
+                          </select>
+                        </div>
+                        <div>
+                          <label className="block font-semibold text-slate-700 mb-1">
+                            Sección / Nivel jerárquico
+                          </label>
+                          <select
+                            disabled={isImmutable}
+                            value={selectedField.recordSection}
+                            onChange={(e) =>
+                              handleUpdateField(selectedField.id, {
+                                recordSection: e.target.value as StructureField['recordSection'],
+                              })
+                            }
+                            className="w-full border border-slate-300 rounded px-2.5 py-1.5 bg-white"
+                          >
+                            <option value="Detalle">Detalle (&lt;DetalleRegistros&gt;)</option>
+                            <option value="Cabecera">Cabecera (&lt;Encabezado&gt;)</option>
+                            <option value="Nodo raíz / Hecho">Nodo raíz / Hecho</option>
+                          </select>
+                        </div>
                       </div>
                     )}
 
-                    <div className="sm:col-span-2 pt-1">
+                    <div className="sm:col-span-2 pt-1 flex flex-wrap items-center justify-between gap-2">
                       <label className="inline-flex items-center gap-2 cursor-pointer font-semibold text-slate-800">
                         <input
                           type="checkbox"
@@ -1482,11 +2540,15 @@ export const VisualOutputBuilderView: React.FC = () => {
                           onChange={(e) =>
                             handleUpdateField(selectedField.id, {
                               required: e.target.checked,
+                              nullable: !e.target.checked,
                             })
                           }
                         />
                         <span>Campo obligatorio en el archivo de salida</span>
                       </label>
+                      <span className="text-[11px] text-slate-500">
+                        Sustento: <strong>{selectedField.evidenceState}</strong>
+                      </span>
                     </div>
                   </div>
                 </>
@@ -1504,11 +2566,11 @@ export const VisualOutputBuilderView: React.FC = () => {
               <div className="flex items-center gap-2">
                 <Eye className="w-4 h-4 text-[#1E4E8C]" />
                 <h3 className="text-xs font-bold uppercase tracking-wider text-slate-800">
-                  Vista previa en vivo ({compiledResult.fileName})
+                  Vista previa en vivo ({compiledResult.fileName}) · Corte {globalPeriod} ({getCutoffDateForPeriod(globalPeriod)})
                 </h3>
               </div>
               <span className="text-[11px] text-slate-500">
-                Se actualiza automáticamente al agregar, reordenar o modificar campos
+                Sincronizada en tiempo real con la tabla y el inspector de propiedades
               </span>
             </div>
 
@@ -1527,387 +2589,410 @@ export const VisualOutputBuilderView: React.FC = () => {
         </div>
       )}
 
-      {/* STEP 3: ORIGEN DE INFORMACIÓN (Data Mapping & Declarative Transformations) */}
+      {/* STEP 3: ORIGEN DE DATOS Y CORRESPONDENCIA DE CAMPOS */}
       {builderStep === 3 && (
-        <div className="space-y-4">
-          <div className="bg-white border border-slate-200 rounded-md p-4 flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3">
-            <div>
-              <h2 className="text-base font-bold text-slate-900">
-                Paso 3. Origen de información y correspondencia de campos
-              </h2>
-              <p className="text-xs text-slate-600 mt-0.5">
-                Seleccione la fuente de datos funcional y asigne qué columna o transformación alimenta cada campo de la salida.
-              </p>
-            </div>
-
-            <div className="flex flex-wrap items-center gap-2.5">
-              <div className="flex items-center gap-2 text-xs">
-                <span className="font-semibold text-slate-700">Origen de datos:</span>
-                <select
-                  aria-label="Seleccionar fuente de datos"
-                  disabled={isImmutable}
-                  value={draft.dataContractId}
-                  onChange={(e) =>
-                    updateDraft((p) => ({ ...p, dataContractId: e.target.value }))
-                  }
-                  className="border border-slate-300 rounded px-2.5 py-1.5 bg-white font-semibold text-slate-900"
-                >
-                  {dataContracts.map((sc) => (
-                    <option key={sc.id} value={sc.id}>
-                      {sc.code} — {sc.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              {!isImmutable && (
-                <button
-                  type="button"
-                  onClick={handleAutoMapFields}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded bg-blue-50 border border-blue-300 text-[#1E4E8C] hover:bg-blue-100 text-xs font-semibold cursor-pointer"
-                >
-                  <Wand2 className="w-3.5 h-3.5" />
-                  Asignar orígenes automáticamente
-                </button>
-              )}
-            </div>
-          </div>
-
-          <div className="bg-white border border-slate-200 rounded-md overflow-hidden">
-            <div className="overflow-x-auto">
-              <table className="w-full text-left border-collapse text-xs">
-                <thead>
-                  <tr className="bg-slate-50 border-b border-slate-200 text-[11px] font-semibold text-slate-600 uppercase">
-                    <th className="py-2.5 px-3">Campo de la Salida</th>
-                    <th className="py-2.5 px-3">Obligatorio</th>
-                    <th className="py-2.5 px-3">Campo en el Origen ({selectedDataContract.code})</th>
-                    <th className="py-2.5 px-3">Tipo de Transformación</th>
-                    <th className="py-2.5 px-3">Regla / Expresión de Transformación</th>
-                    <th className="py-2.5 px-3">Estado</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-200">
-                  {draft.fields.map((f) => {
-                    const isUnmappedRequired =
-                      f.required &&
-                      !f.mapping.sourceField.trim() &&
-                      f.mapping.transformationKind !== 'Constante' &&
-                      !f.defaultValue.trim();
-
-                    return (
-                      <tr
-                        key={f.id}
-                        className={isUnmappedRequired ? 'bg-rose-50/70' : 'hover:bg-slate-50'}
-                      >
-                        <td className="py-2.5 px-3">
-                          <div className="font-mono font-bold text-slate-900">
-                            {f.technicalName}
-                          </div>
-                          <div className="text-[11px] text-slate-500">
-                            {f.label} ({f.dataType}, long. {f.length})
-                          </div>
-                        </td>
-
-                        <td className="py-2.5 px-3">
-                          {f.required ? (
-                            <span className="px-2 py-0.5 rounded bg-blue-50 text-[#1E4E8C] font-semibold text-[11px]">
-                              Obligatorio
-                            </span>
-                          ) : (
-                            <span className="text-slate-500 text-[11px]">Opcional</span>
-                          )}
-                        </td>
-
-                        <td className="py-2.5 px-3">
-                          <select
-                            aria-label={`Columna origen para ${f.technicalName}`}
-                            disabled={isImmutable}
-                            value={f.mapping.sourceField}
-                            onChange={(e) => {
-                              const val = e.target.value;
-                              handleUpdateFieldMapping(f.id, {
-                                sourceField: val,
-                                expression: val,
-                              });
-                            }}
-                            className={`w-full border rounded px-2 py-1.5 font-mono text-xs ${
-                              isUnmappedRequired
-                                ? 'border-rose-400 bg-white text-rose-900 font-bold'
-                                : 'border-slate-300 bg-white text-slate-900'
-                            }`}
-                          >
-                            <option value="">-- Sin asignar (Vacío) --</option>
-                            {selectedDataContract.fields.map((scField) => (
-                              <option key={scField.name} value={scField.name}>
-                                {scField.name} ({scField.dataType}) — Ej:{' '}
-                                {String(scField.sampleValues[0] ?? '')}
-                              </option>
-                            ))}
-                          </select>
-                        </td>
-
-                        <td className="py-2.5 px-3">
-                          <select
-                            aria-label={`Transformación para ${f.technicalName}`}
-                            disabled={isImmutable}
-                            value={f.mapping.transformationKind}
-                            onChange={(e) =>
-                              handleUpdateFieldMapping(f.id, {
-                                transformationKind: e.target.value as TransformationKind,
-                              })
-                            }
-                            className="w-full border border-slate-300 rounded px-2 py-1.5 bg-white text-slate-800"
-                          >
-                            <option value="Directo">Directo</option>
-                            <option value="Máscara fecha/número">Máscara fecha/número</option>
-                            <option value="Concatenación tipada">Concatenación tipada</option>
-                            <option value="Constante">Valor constante</option>
-                            <option value="Variable de contexto">Variable de contexto</option>
-                            <option value="Expresión declarativa">Expresión declarativa</option>
-                          </select>
-                        </td>
-
-                        <td className="py-2.5 px-3">
-                          <input
-                            type="text"
-                            aria-label={`Expresión de transformación para ${f.technicalName}`}
-                            disabled={isImmutable}
-                            value={f.mapping.expression}
-                            onChange={(e) =>
-                              handleUpdateFieldMapping(f.id, {
-                                expression: e.target.value,
-                              })
-                            }
-                            placeholder="Ej. TRIM(nombre_cliente)"
-                            className="w-full border border-slate-300 rounded px-2 py-1.5 font-mono text-xs bg-white"
-                          />
-                        </td>
-
-                        <td className="py-2.5 px-3">
-                          {isUnmappedRequired ? (
-                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-rose-100 text-rose-900 font-semibold text-[11px]">
-                              <AlertTriangle className="w-3.5 h-3.5 text-rose-700" />
-                              Falta origen
-                            </span>
-                          ) : (
-                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-emerald-50 text-emerald-900 font-semibold text-[11px]">
-                              <CheckCircle2 className="w-3.5 h-3.5 text-emerald-700" />
-                              Asignado
-                            </span>
-                          )}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        </div>
+        <Step3DataOriginView
+          activeOutput={draft}
+          activeOutputType={selectedOutputType}
+          isImmutable={isImmutable}
+          dataContracts={dataContracts}
+          catalogSourceFormats={catalogSourceFormats}
+          globalEntity={globalEntity}
+          globalPeriod={globalPeriod}
+          previewContext={fileNameContext}
+          onUpdateOutput={updateDraft}
+          onUpdateFieldMapping={(fieldId, mappingKey, value) =>
+            handleUpdateFieldMapping(fieldId, { [mappingKey]: value })
+          }
+          onSaveDataContract={saveDataContract}
+          onSaveCatalogSourceFormat={saveCatalogSourceFormat}
+          onImportCatalogEntriesBatch={importCatalogEntriesBatch}
+          onRegisterStructureForCatalogEntry={registerStructureForCatalogEntry}
+          onAddExecutionBatchToContract={addExecutionBatchToContract}
+          onRequestCreateRevision={() => setShowRevisionModal(true)}
+          onGoToStep={setBuilderStep}
+          notify={notify}
+        />
       )}
 
       {/* STEP 4: VALIDACIONES */}
       {builderStep === 4 && (
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
-          {/* Left: Output Validation Rules (7 cols) */}
-          <div className="lg:col-span-7 bg-white border border-slate-200 rounded-md p-5 space-y-4">
-            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 pb-3">
-              <div>
-                <h2 className="text-base font-bold text-slate-900">
-                  Paso 4. Reglas de validación de la salida ({draft.validationRules.length})
-                </h2>
-                <p className="text-xs text-slate-600 mt-0.5">
-                  Configure las validaciones propias de la estructura y generación del archivo.
-                </p>
+          {/* Left: Guided Rule Builder + Configured Output Validation Rules (7 cols) */}
+          <div className="lg:col-span-7 space-y-4">
+            {/* Guided Rule Creator for Non-Technical / Functional Users */}
+            {!isImmutable && (
+              <div className="bg-white border border-blue-200 rounded-md p-4 space-y-3 text-xs">
+                <div className="flex items-center justify-between border-b border-slate-200 pb-2">
+                  <div>
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-[#1E4E8C]">
+                      Constructor guiado de validaciones (Sin escribir código)
+                    </span>
+                    <h3 className="text-sm font-bold text-slate-900">
+                      Agregar regla de validación funcional a esta salida
+                    </h3>
+                  </div>
+                  <HelpTooltip
+                    align="right"
+                    title="Constructor guiado de reglas"
+                    description="Permite agregar controles sobre los campos de la salida o sobre el conteo de registros sin escribir fórmulas técnicas. Cada regla activa se evalúa de verdad sobre todos los registros al generar el archivo."
+                  />
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                  <div>
+                    <label className="block font-semibold text-slate-700 mb-1">
+                      1. Tipo de condición
+                    </label>
+                    <select
+                      aria-label="Tipo de condición de la regla guiada"
+                      value={guidedRuleOperator}
+                      onChange={(e) =>
+                        setGuidedRuleOperator(
+                          e.target.value as typeof guidedRuleOperator
+                        )
+                      }
+                      className="w-full border border-slate-300 rounded px-2 py-1.5 bg-white"
+                    >
+                      <option value="NOT_NULL">Campo no vacío (NOT_NULL)</option>
+                      <option value="MAX_LEN">Longitud máxima (LEN_CHARS &lt;= N)</option>
+                      <option value="MIN_NUM">Valor numérico mínimo (&gt;= N)</option>
+                      <option value="NOT_ZERO">Valor distinto de cero (!= 0)</option>
+                      <option value="IN_LIST">Valor en lista autorizada (IN_LIST)</option>
+                      <option value="REGEX">Cumple patrón regular (MATCH_REGEX)</option>
+                      <option value="RECORD_COUNT">Cantidad mínima de registros</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block font-semibold text-slate-700 mb-1">
+                      2. Campo objetivo
+                    </label>
+                    <select
+                      aria-label="Campo objetivo de la regla guiada"
+                      disabled={guidedRuleOperator === 'RECORD_COUNT'}
+                      value={guidedRuleField || draft.fields[0]?.technicalName || ''}
+                      onChange={(e) => setGuidedRuleField(e.target.value)}
+                      className="w-full border border-slate-300 rounded px-2 py-1.5 bg-white font-mono disabled:bg-slate-100"
+                    >
+                      {draft.fields.map((f) => (
+                        <option key={f.id} value={f.technicalName}>
+                          {f.technicalName} ({f.label})
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block font-semibold text-slate-700 mb-1">
+                      3. Parámetro / Valor límite
+                    </label>
+                    <input
+                      type="text"
+                      disabled={
+                        guidedRuleOperator === 'NOT_NULL' ||
+                        guidedRuleOperator === 'NOT_ZERO'
+                      }
+                      value={guidedRuleParam}
+                      onChange={(e) => setGuidedRuleParam(e.target.value)}
+                      placeholder={
+                        guidedRuleOperator === 'IN_LIST'
+                          ? 'Ej. VIGENTE,VENCIDO'
+                          : guidedRuleOperator === 'REGEX'
+                          ? 'Ej. ^[0-9]+$'
+                          : 'Ej. 10'
+                      }
+                      className="w-full border border-slate-300 rounded px-2 py-1.5 font-mono bg-white disabled:bg-slate-100"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-12 gap-2.5 items-end">
+                  <div className="sm:col-span-3">
+                    <label className="block font-semibold text-slate-700 mb-1">
+                      Severidad
+                    </label>
+                    <select
+                      value={guidedRuleSeverity}
+                      onChange={(e) =>
+                        setGuidedRuleSeverity(
+                          e.target.value as 'Bloqueante' | 'Advertencia'
+                        )
+                      }
+                      className="w-full border border-slate-300 rounded px-2 py-1.5 bg-white font-semibold"
+                    >
+                      <option value="Bloqueante">Bloqueante</option>
+                      <option value="Advertencia">Advertencia</option>
+                    </select>
+                  </div>
+                  <div className="sm:col-span-6">
+                    <label className="block font-semibold text-slate-700 mb-1">
+                      Mensaje diagnóstico (opcional)
+                    </label>
+                    <input
+                      type="text"
+                      value={guidedRuleMessage}
+                      onChange={(e) => setGuidedRuleMessage(e.target.value)}
+                      placeholder="Se genera automáticamente si se deja en blanco"
+                      className="w-full border border-slate-300 rounded px-2 py-1.5 bg-white"
+                    />
+                  </div>
+                  <div className="sm:col-span-3">
+                    <button
+                      type="button"
+                      onClick={handleAddGuidedRule}
+                      className="w-full inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded bg-[#1E4E8C] text-white font-semibold hover:bg-[#163A69] cursor-pointer"
+                    >
+                      <Plus className="w-3.5 h-3.5" />
+                      Agregar regla
+                    </button>
+                  </div>
+                </div>
               </div>
-              {!isImmutable && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    const nextNum = draft.validationRules.length + 1;
-                    const newRule: OutputValidationRule = {
-                      id: `VR-${Date.now()}`,
-                      code: `VAL-SAL-0${nextNum}`,
-                      name: `Control de consistencia de salida #${nextNum}`,
-                      layer: 'Representación y archivo',
-                      targetFieldOrRole: 'Archivo principal',
-                      conditionExpression: 'RECORD_COUNT > 0 AND VALIDATE_FIELD_TYPES()',
-                      severity: 'Bloqueante',
-                      isNormativeProtected: false,
-                      owner: 'Política de salida y entrega',
-                      diagnosticMessage:
-                        'El archivo no supera la validación estructural configurada.',
-                      enabled: true,
-                    };
-                    updateDraft((p) => ({
-                      ...p,
-                      validationRules: [...p.validationRules, newRule],
-                    }));
-                  }}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded bg-[#1E4E8C] text-white text-xs font-semibold hover:bg-[#163A69] cursor-pointer"
-                >
-                  <Plus className="w-3.5 h-3.5" />
-                  Agregar validación
-                </button>
-              )}
-            </div>
+            )}
 
-            <div className="space-y-3">
-              {draft.validationRules.map((rule) => (
-                <div
-                  key={rule.id}
-                  className="p-3.5 rounded border border-slate-200 bg-slate-50/70 space-y-2 text-xs"
-                >
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <div className="flex items-center gap-2">
-                      <input
-                        type="checkbox"
-                        disabled={isImmutable}
-                        checked={rule.enabled}
-                        onChange={(e) =>
-                          updateDraft((p) => ({
-                            ...p,
-                            validationRules: p.validationRules.map((r) =>
-                              r.id === rule.id ? { ...r, enabled: e.target.checked } : r
-                            ),
-                          }))
-                        }
-                      />
-                      <span className="font-mono font-bold text-[#1E4E8C]">{rule.code}</span>
-                      <input
-                        type="text"
-                        disabled={isImmutable}
-                        value={rule.name}
-                        onChange={(e) =>
-                          updateDraft((p) => ({
-                            ...p,
-                            validationRules: p.validationRules.map((r) =>
-                              r.id === rule.id ? { ...r, name: e.target.value } : r
-                            ),
-                          }))
-                        }
-                        className="font-semibold text-slate-900 border-b border-transparent focus:border-slate-400 bg-transparent px-1"
-                      />
-                    </div>
+            <div className="bg-white border border-slate-200 rounded-md p-5 space-y-4">
+              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 pb-3">
+                <div>
+                  <h2 className="text-base font-bold text-slate-900">
+                    Paso 4. Reglas configuradas en la salida ({draft.validationRules.length})
+                  </h2>
+                  <p className="text-xs text-slate-600 mt-0.5">
+                    Active, desactive o edite las reglas de validación propias de esta salida.
+                  </p>
+                </div>
+              </div>
 
-                    <div className="flex items-center gap-2">
-                      <select
-                        disabled={isImmutable}
-                        value={rule.severity}
-                        onChange={(e) =>
-                          updateDraft((p) => ({
-                            ...p,
-                            validationRules: p.validationRules.map((r) =>
-                              r.id === rule.id
-                                ? {
-                                    ...r,
-                                    severity: e.target.value as 'Bloqueante' | 'Advertencia',
-                                  }
-                                : r
-                            ),
-                          }))
-                        }
-                        className="border border-slate-300 rounded px-2 py-0.5 text-[11px] font-semibold bg-white"
-                      >
-                        <option value="Bloqueante">Bloqueante</option>
-                        <option value="Advertencia">Advertencia</option>
-                      </select>
-
-                      {!isImmutable && draft.validationRules.length > 1 && (
-                        <button
-                          type="button"
-                          onClick={() =>
+              <div className="space-y-3">
+                {draft.validationRules.map((rule) => (
+                  <div
+                    key={rule.id}
+                    className="p-3.5 rounded border border-slate-200 bg-slate-50/70 space-y-2 text-xs"
+                  >
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="checkbox"
+                          aria-label={`Activar regla ${rule.code}`}
+                          disabled={isImmutable}
+                          checked={rule.enabled}
+                          onChange={(e) =>
                             updateDraft((p) => ({
                               ...p,
-                              validationRules: p.validationRules.filter(
-                                (r) => r.id !== rule.id
+                              validationRules: p.validationRules.map((r) =>
+                                r.id === rule.id ? { ...r, enabled: e.target.checked } : r
                               ),
                             }))
                           }
-                          className="p-1 text-rose-700 hover:bg-rose-50 rounded cursor-pointer"
-                          title="Eliminar regla"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
-                      )}
-                    </div>
-                  </div>
+                        />
+                        <span className="font-mono font-bold text-[#1E4E8C]">{rule.code}</span>
+                        <input
+                          type="text"
+                          disabled={isImmutable}
+                          value={rule.name}
+                          onChange={(e) =>
+                            updateDraft((p) => ({
+                              ...p,
+                              validationRules: p.validationRules.map((r) =>
+                                r.id === rule.id ? { ...r, name: e.target.value } : r
+                              ),
+                            }))
+                          }
+                          className="font-semibold text-slate-900 border-b border-transparent focus:border-slate-400 bg-transparent px-1"
+                        />
+                      </div>
 
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1">
-                    <div>
-                      <label className="block text-[11px] text-slate-500 font-semibold">
-                        Condición / Expresión declarativa
-                      </label>
-                      <input
-                        type="text"
-                        disabled={isImmutable}
-                        value={rule.conditionExpression}
-                        onChange={(e) =>
-                          updateDraft((p) => ({
-                            ...p,
-                            validationRules: p.validationRules.map((r) =>
-                              r.id === rule.id
-                                ? { ...r, conditionExpression: e.target.value }
-                                : r
-                            ),
-                          }))
-                        }
-                        className="w-full border border-slate-300 rounded px-2 py-1 font-mono text-[11px] bg-white mt-0.5"
-                      />
+                      <div className="flex items-center gap-2">
+                        <select
+                          disabled={isImmutable}
+                          value={rule.severity}
+                          onChange={(e) =>
+                            updateDraft((p) => ({
+                              ...p,
+                              validationRules: p.validationRules.map((r) =>
+                                r.id === rule.id
+                                  ? {
+                                      ...r,
+                                      severity: e.target.value as 'Bloqueante' | 'Advertencia',
+                                    }
+                                  : r
+                              ),
+                            }))
+                          }
+                          className="border border-slate-300 rounded px-2 py-0.5 text-[11px] font-semibold bg-white"
+                        >
+                          <option value="Bloqueante">Bloqueante</option>
+                          <option value="Advertencia">Advertencia</option>
+                        </select>
+
+                        {!isImmutable && draft.validationRules.length > 1 && (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              updateDraft((p) => ({
+                                ...p,
+                                validationRules: p.validationRules.filter(
+                                  (r) => r.id !== rule.id
+                                ),
+                              }))
+                            }
+                            className="p-1 text-rose-700 hover:bg-rose-50 rounded cursor-pointer"
+                            title="Eliminar regla"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                      </div>
                     </div>
-                    <div>
-                      <label className="block text-[11px] text-slate-500 font-semibold">
-                        Mensaje diagnóstico al usuario
-                      </label>
-                      <input
-                        type="text"
-                        disabled={isImmutable}
-                        value={rule.diagnosticMessage}
-                        onChange={(e) =>
-                          updateDraft((p) => ({
-                            ...p,
-                            validationRules: p.validationRules.map((r) =>
-                              r.id === rule.id
-                                ? { ...r, diagnosticMessage: e.target.value }
-                                : r
-                            ),
-                          }))
-                        }
-                        className="w-full border border-slate-300 rounded px-2 py-1 text-[11px] bg-white mt-0.5"
-                      />
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1">
+                      <div>
+                        <label className="block text-[11px] text-slate-500 font-semibold">
+                          Condición / Expresión declarativa (Avanzado)
+                        </label>
+                        <input
+                          type="text"
+                          disabled={isImmutable}
+                          value={rule.conditionExpression}
+                          onChange={(e) =>
+                            updateDraft((p) => ({
+                              ...p,
+                              validationRules: p.validationRules.map((r) =>
+                                r.id === rule.id
+                                  ? { ...r, conditionExpression: e.target.value }
+                                  : r
+                              ),
+                            }))
+                          }
+                          className="w-full border border-slate-300 rounded px-2 py-1 font-mono text-[11px] bg-white mt-0.5"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[11px] text-slate-500 font-semibold">
+                          Mensaje diagnóstico al usuario
+                        </label>
+                        <input
+                          type="text"
+                          disabled={isImmutable}
+                          value={rule.diagnosticMessage}
+                          onChange={(e) =>
+                            updateDraft((p) => ({
+                              ...p,
+                              validationRules: p.validationRules.map((r) =>
+                                r.id === rule.id
+                                  ? { ...r, diagnosticMessage: e.target.value }
+                                  : r
+                              ),
+                            }))
+                          }
+                          className="w-full border border-slate-300 rounded px-2 py-1 text-[11px] bg-white mt-0.5"
+                        />
+                      </div>
                     </div>
                   </div>
-                </div>
-              ))}
+                ))}
+              </div>
             </div>
           </div>
 
-          {/* Right: Automatic Built-in Structural Checks + Format DAQUE Separation (5 cols) */}
+          {/* Right: Live Evaluation Findings + DAQUE Separation (5 cols) */}
           <div className="lg:col-span-5 space-y-4">
-            <div className="bg-white border border-slate-200 rounded-md p-4 space-y-2.5 text-xs">
-              <h3 className="text-sm font-bold text-slate-900">
-                Controles automáticos de estructura aplicados por el motor
-              </h3>
-              <ul className="space-y-2 text-slate-700">
-                <li className="flex items-start gap-2">
+            <div className="bg-white border border-slate-200 rounded-md p-4 space-y-3 text-xs">
+              <div className="flex items-center justify-between border-b border-slate-200 pb-2">
+                <h3 className="text-sm font-bold text-slate-900">
+                  Resultado actual de validaciones sobre los datos
+                </h3>
+                <span
+                  className={`px-2 py-0.5 rounded font-bold text-[11px] ${
+                    blockingIssuesCount === 0
+                      ? 'bg-emerald-100 text-emerald-900'
+                      : 'bg-rose-100 text-rose-900'
+                  }`}
+                >
+                  {blockingIssuesCount === 0
+                    ? '0 bloqueos'
+                    : `${blockingIssuesCount} bloqueo(s)`}
+                </span>
+              </div>
+
+              {configDiagnostics.length === 0 && compiledResult.findings.length === 0 ? (
+                <div className="p-3 rounded bg-emerald-50 border border-emerald-200 text-emerald-950 flex items-start gap-2">
                   <CheckCircle2 className="w-4 h-4 text-emerald-700 shrink-0 mt-0.5" />
-                  <span>
-                    <strong>Obligatoriedad y nulos:</strong> Verifica que todo campo marcado como obligatorio tenga origen asignado y valor presente.
-                  </span>
-                </li>
-                <li className="flex items-start gap-2">
-                  <CheckCircle2 className="w-4 h-4 text-emerald-700 shrink-0 mt-0.5" />
-                  <span>
-                    <strong>Longitudes sin truncamiento silencioso:</strong> Si un dato supera la longitud del campo, la validación bloquea la generación e informa la columna exacta.
-                  </span>
-                </li>
-                <li className="flex items-start gap-2">
-                  <CheckCircle2 className="w-4 h-4 text-emerald-700 shrink-0 mt-0.5" />
-                  <span>
-                    <strong>Consistencia posicional (TXT):</strong> Verifica que no existan posiciones superpuestas ni huecos involuntarios.
-                  </span>
-                </li>
-              </ul>
+                  <div>
+                    <div className="font-bold">Todas las reglas activas se cumplen</div>
+                    <p className="mt-0.5 text-[11px]">
+                      Los {compiledResult.rowsProcessed} registros del corte {globalPeriod} superan los controles de estructura, mapeo y reglas de salida.
+                    </p>
+                  </div>
+                </div>
+              ) : (
+                <div className="space-y-2 max-h-80 overflow-y-auto">
+                  {configDiagnostics.map((diag) => (
+                    <div
+                      key={diag.id}
+                      className="p-2.5 rounded border border-rose-200 bg-rose-50 text-rose-950 space-y-1"
+                    >
+                      <div className="font-bold flex items-center justify-between">
+                        <span>{diag.title}</span>
+                        <span className="px-1.5 py-0.2 rounded bg-rose-200 text-[10px]">
+                          {diag.severity}
+                        </span>
+                      </div>
+                      <p className="text-[11px]">{diag.howToFix}</p>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (diag.fieldId) setSelectedFieldId(diag.fieldId);
+                          setBuilderStep(diag.step);
+                        }}
+                        className="px-2 py-1 rounded bg-rose-800 text-white text-[10px] font-semibold hover:bg-rose-900 cursor-pointer"
+                      >
+                        Ir al campo afectado (Paso {diag.step})
+                      </button>
+                    </div>
+                  ))}
+
+                  {compiledResult.findings.map((f) => (
+                    <div
+                      key={f.id}
+                      className={`p-2.5 rounded border space-y-1 ${
+                        f.severity === 'Bloqueante'
+                          ? 'border-rose-200 bg-rose-50 text-rose-950'
+                          : 'border-amber-200 bg-amber-50 text-amber-950'
+                      }`}
+                    >
+                      <div className="font-bold flex items-center justify-between">
+                        <span>
+                          [{f.code}] {f.location}
+                        </span>
+                        <span className="text-[10px] font-bold">{f.severity}</span>
+                      </div>
+                      <p className="text-[11px]">{f.description}</p>
+                      <p className="text-[10px] opacity-90">
+                        <strong>Acción recomendada:</strong> {f.suggestedAction}
+                      </p>
+                      {f.fieldTechnicalName && (
+                        <div className="flex gap-1.5 pt-1">
+                          <button
+                            type="button"
+                            onClick={() => jumpToFieldByTechnicalName(f.fieldTechnicalName, 2)}
+                            className="px-2 py-0.5 rounded bg-slate-800 text-white text-[10px] font-semibold hover:bg-slate-900 cursor-pointer"
+                          >
+                            Ir al campo en Paso 2
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => jumpToFieldByTechnicalName(f.fieldTechnicalName, 3)}
+                            className="px-2 py-0.5 rounded border border-slate-400 bg-white text-slate-800 text-[10px] font-semibold hover:bg-slate-100 cursor-pointer"
+                          >
+                            Revisar mapeo en Paso 3
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
 
             <div className="bg-indigo-50/70 border border-indigo-200 rounded-md p-4 space-y-2 text-xs text-indigo-950">
@@ -1915,7 +3000,7 @@ export const VisualOutputBuilderView: React.FC = () => {
                 Separación de reglas de datos del formato (DAQUE)
               </div>
               <p>
-                Las reglas de negocio propias de cada formato regulatorio (por ejemplo, si se permiten saldos en cero en un reporte mensual vs. trimestral) se administran en el perfil DAQUE de cada formato y <strong>no contaminan la estructura de esta salida</strong>, permitiendo reutilizarla en varios formatos.
+                Las reglas de negocio propias de cada formato regulatorio (por ejemplo, si un formato específico rechaza saldos en cero en el perfil <strong>{activeDaqueProfile?.code}</strong>) se administran en el perfil DAQUE de cada asociación y <strong>no contaminan la estructura de esta salida</strong>, permitiendo reutilizarla en múltiples formatos.
               </p>
             </div>
           </div>
@@ -1931,43 +3016,75 @@ export const VisualOutputBuilderView: React.FC = () => {
                 Paso 5. Reglas de generación, nombre dinámico y canal de entrega
               </h2>
               <p className="text-xs text-slate-600 mt-0.5">
-                Configure cómo se nombra el archivo generado, si conforma un paquete y por qué canal se distribuye.
+                Configure el patrón de nombre del archivo resultante, la política de datos vacíos y el canal de entrega predeterminado.
               </p>
             </div>
 
             <div>
               <label className="block font-semibold text-slate-800 mb-1">
-                Patrón de nombre dinámico del archivo *
+                Patrón de nombre dinámico del archivo principal *
+                <HelpTooltip
+                  title="Patrón de nombre dinámico"
+                  description="Construye automáticamente el nombre del archivo reemplazando las variables entre llaves: {entidad}, {formato}, {periodo}, {fecha_corte}, {version} y {consecutivo}. La extensión del tipo de archivo se añade automáticamente."
+                  example="saldos_{entidad}_{formato}_{periodo}_v{version}"
+                />
               </label>
               <input
                 type="text"
                 disabled={isImmutable}
                 value={draft.composition.fileNamePattern}
-                onChange={(e) =>
+                onChange={(e) => {
+                  const newPat = e.target.value;
+                  const cleanBase = newPat.replace(
+                    new RegExp(`\\.${draft.composition.extension}$`, 'i'),
+                    ''
+                  );
                   updateDraft((p) => ({
                     ...p,
-                    composition: { ...p.composition, fileNamePattern: e.target.value },
-                  }))
-                }
+                    composition: {
+                      ...p.composition,
+                      fileNamePattern: newPat,
+                      packageMembers: p.composition.packageMembers.map((m) =>
+                        m.role === 'Principal'
+                          ? {
+                              ...m,
+                              fileNamePattern: `${cleanBase}.${p.composition.extension}`,
+                            }
+                          : m
+                      ),
+                    },
+                  }));
+                }}
                 className="w-full border border-slate-300 rounded px-3 py-2 font-mono text-slate-900"
               />
 
               {!isImmutable && (
                 <div className="flex flex-wrap items-center gap-1.5 mt-2">
-                  <span className="text-[11px] text-slate-500">Insertar variable:</span>
-                  {['{entidad}', '{formato}', '{periodo}', '{version}', '{consecutivo}'].map(
+                  <span className="text-[11px] text-slate-500">Insertar marcador:</span>
+                  {['{entidad}', '{formato}', '{periodo}', '{fecha_corte}', '{version}', '{consecutivo}'].map(
                     (token) => (
                       <button
                         key={token}
                         type="button"
                         onClick={() =>
-                          updateDraft((p) => ({
-                            ...p,
-                            composition: {
-                              ...p.composition,
-                              fileNamePattern: `${p.composition.fileNamePattern}_${token}`,
-                            },
-                          }))
+                          updateDraft((p) => {
+                            const nextPat = `${p.composition.fileNamePattern}_${token}`;
+                            return {
+                              ...p,
+                              composition: {
+                                ...p.composition,
+                                fileNamePattern: nextPat,
+                                packageMembers: p.composition.packageMembers.map((m) =>
+                                  m.role === 'Principal'
+                                    ? {
+                                        ...m,
+                                        fileNamePattern: `${nextPat}.${p.composition.extension}`,
+                                      }
+                                    : m
+                                ),
+                              },
+                            };
+                          })
                         }
                         className="px-2 py-0.5 rounded border border-slate-300 bg-slate-50 hover:bg-slate-100 font-mono text-[11px] text-[#1E4E8C] cursor-pointer"
                       >
@@ -1978,8 +3095,13 @@ export const VisualOutputBuilderView: React.FC = () => {
                 </div>
               )}
 
-              <div className="mt-2 p-2.5 rounded bg-blue-50 border border-blue-200 text-[#1E4E8C] font-mono text-xs">
-                Ejemplo de nombre resultante: <strong>{compiledResult.fileName}</strong>
+              <div className="mt-2 p-2.5 rounded bg-blue-50 border border-blue-200 text-[#1E4E8C] font-mono text-xs flex items-center justify-between">
+                <span>
+                  Nombre resuelto para el corte activo: <strong>{compiledResult.fileName}</strong>
+                </span>
+                <span className="text-[10px] font-sans text-slate-600">
+                  Sincronizado con vista previa y descarga
+                </span>
               </div>
             </div>
 
@@ -1987,6 +3109,10 @@ export const VisualOutputBuilderView: React.FC = () => {
               <div>
                 <label className="block font-semibold text-slate-800 mb-1">
                   Empaquetado del archivo
+                  <HelpTooltip
+                    title="Empaquetado de entrega"
+                    description="Indica si el archivo se entrega de forma directa o dentro de un contenedor comprimido (.ZIP o .GZIP) cuando el paquete incluye anexos o archivos de control."
+                  />
                 </label>
                 <select
                   disabled={isImmutable}
@@ -2010,7 +3136,12 @@ export const VisualOutputBuilderView: React.FC = () => {
 
               <div>
                 <label className="block font-semibold text-slate-800 mb-1">
-                  Canal de entrega predeterminado
+                  Canal de entrega predeterminado (Referencia)
+                  <HelpTooltip
+                    title="Canal configurado vs Conexión activa"
+                    description="Establece el mecanismo de entrega predeterminado (SFTP, API REST, Descarga controlada o Repositorio). Cada asociación en la pantalla D puede sobrescribir este canal."
+                    consequence="En este entorno de navegador, los canales SFTP y API están configurados como referencia de arquitectura y no abren conexiones de red externas."
+                  />
                 </label>
                 <select
                   disabled={isImmutable}
@@ -2031,9 +3162,30 @@ export const VisualOutputBuilderView: React.FC = () => {
                 </select>
               </div>
 
+              {/* Explicit distinction between Configured Channel Reference and Connection State */}
+              <div className="sm:col-span-2 p-2.5 rounded border border-slate-200 bg-slate-50 flex flex-wrap items-center justify-between gap-2 text-[11px]">
+                <div>
+                  <span className="font-semibold text-slate-800">
+                    Canal seleccionado: {selectedDeliveryChannel?.name} ({selectedDeliveryChannel?.protocol})
+                  </span>
+                  <div className="text-slate-500">
+                    Destino lógico: <span className="font-mono">{selectedDeliveryChannel?.logicalDestination}</span>
+                  </div>
+                </div>
+                <span className="px-2 py-0.5 rounded bg-amber-50 border border-amber-300 text-amber-900 font-semibold">
+                  {selectedDeliveryChannel?.protocol === 'Descarga controlada (Manual)'
+                    ? 'Operativo en navegador (Descarga directa)'
+                    : 'Configurado por referencia (Sin conexión externa activa en navegador)'}
+                </span>
+              </div>
+
               <div className="sm:col-span-2">
                 <label className="block font-semibold text-slate-800 mb-1">
-                  Comportamiento cuando no existan operaciones en el periodo
+                  Comportamiento cuando existan 0 registros en el periodo
+                  <HelpTooltip
+                    title="Política de conjunto de datos vacío"
+                    description="Define qué hace el generador cuando el periodo de corte tiene 0 operaciones: producir un archivo vacío válido con cabecera, bloquear la generación con error o no generar el archivo."
+                  />
                 </label>
                 <select
                   disabled={isImmutable}
@@ -2061,28 +3213,35 @@ export const VisualOutputBuilderView: React.FC = () => {
             </div>
           </div>
 
-          {/* Right: Package Files Composition */}
+          {/* Right: Package Files Composition (Editable & Duplicate-Safe) */}
           <div className="lg:col-span-5 bg-white border border-slate-200 rounded-md p-5 space-y-3 text-xs">
             <div className="flex items-center justify-between border-b border-slate-200 pb-2.5">
               <div>
-                <h3 className="text-sm font-bold text-slate-900">
-                  Archivos que integran la entrega ({draft.composition.packageMembers.length})
+                <h3 className="text-sm font-bold text-slate-900 flex items-center gap-1">
+                  <span>Archivos que integran el paquete ({draft.composition.packageMembers.length})</span>
+                  <HelpTooltip
+                    align="right"
+                    title="Roles de archivo en el paquete"
+                    description="El archivo Principal siempre sincroniza su nombre con el patrón principal. Puede agregar archivos complementarios (Control/Resumen, Anexo, Detalle) con nombres únicos."
+                  />
                 </h3>
                 <p className="text-[11px] text-slate-500">
-                  Roles de archivo definidos para esta salida configurada.
+                  No se permiten dos archivos con el mismo nombre dentro del mismo paquete.
                 </p>
               </div>
               {!isImmutable && (
                 <button
                   type="button"
                   onClick={() => {
+                    const seq = draft.composition.packageMembers.length + 1;
+                    const seqStr = String(seq).padStart(2, '0');
                     const newMember: PackageMemberRole = {
                       id: `PKG-${Date.now()}`,
-                      role: 'Control / Resumen',
+                      role: seq === 2 ? 'Control / Resumen' : 'Anexo',
                       cardinality: '0..1 (Opcional)',
                       outputDefinitionId: draft.code,
                       outputVersion: draft.version,
-                      fileNamePattern: `{entidad}_${draft.code}_{periodo}_RESUMEN.txt`,
+                      fileNamePattern: `{entidad}_${draft.code}_{periodo}_ANEXO_${seqStr}.txt`,
                       includeInRegulatoryDelivery: true,
                       allowRoleMappingOverride: true,
                     };
@@ -2094,7 +3253,7 @@ export const VisualOutputBuilderView: React.FC = () => {
                       },
                     }));
                   }}
-                  className="px-2.5 py-1 rounded border border-blue-300 bg-blue-50 text-[#1E4E8C] font-semibold hover:bg-blue-100 cursor-pointer"
+                  className="px-2.5 py-1 rounded border border-blue-300 bg-blue-50 text-[#1E4E8C] font-semibold hover:bg-blue-100 cursor-pointer shrink-0"
                 >
                   + Agregar archivo al paquete
                 </button>
@@ -2102,28 +3261,126 @@ export const VisualOutputBuilderView: React.FC = () => {
             </div>
 
             <div className="space-y-2.5">
-              {draft.composition.packageMembers.map((m) => (
-                <div
-                  key={m.id}
-                  className="p-3 rounded border border-slate-200 bg-slate-50 space-y-1"
-                >
-                  <div className="flex items-center justify-between">
-                    <span className="font-bold text-slate-900">{m.role}</span>
-                    <span className="px-2 py-0.5 rounded bg-slate-200 text-slate-800 font-mono text-[10px] font-bold">
-                      {m.cardinality}
-                    </span>
+              {draft.composition.packageMembers.map((m, idx) => {
+                const isPrincipal = m.role === 'Principal';
+                const resolvedMemberName = isPrincipal
+                  ? compiledResult.fileName
+                  : resolveDynamicFileName(m.fileNamePattern, {
+                      ...fileNameContext,
+                      consecutivo: String(idx + 1).padStart(2, '0'),
+                    });
+
+                return (
+                  <div
+                    key={m.id}
+                    className={`p-3 rounded border space-y-2 ${
+                      isPrincipal
+                        ? 'border-blue-200 bg-blue-50/40'
+                        : 'border-slate-200 bg-slate-50'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      {isPrincipal ? (
+                        <span className="font-bold text-[#1E4E8C]">
+                          1. Rol: Principal (Archivo de la salida)
+                        </span>
+                      ) : (
+                        <select
+                          aria-label={`Rol del archivo ${idx + 1}`}
+                          disabled={isImmutable}
+                          value={m.role}
+                          onChange={(e) =>
+                            updateDraft((p) => ({
+                              ...p,
+                              composition: {
+                                ...p.composition,
+                                packageMembers: p.composition.packageMembers.map((item) =>
+                                  item.id === m.id
+                                    ? {
+                                        ...item,
+                                        role: e.target.value as PackageMemberRole['role'],
+                                      }
+                                    : item
+                                ),
+                              },
+                            }))
+                          }
+                          className="border border-slate-300 rounded px-2 py-0.5 bg-white font-bold text-slate-900"
+                        >
+                          <option value="Control / Resumen">Control / Resumen</option>
+                          <option value="Anexo">Anexo</option>
+                          <option value="Detalle">Detalle secundario</option>
+                          <option value="Evidencia interna">Evidencia interna</option>
+                        </select>
+                      )}
+
+                      <div className="flex items-center gap-1.5">
+                        <span className="px-2 py-0.5 rounded bg-slate-200 text-slate-800 font-mono text-[10px] font-bold">
+                          {m.cardinality}
+                        </span>
+                        {!isImmutable && !isPrincipal && (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              updateDraft((p) => ({
+                                ...p,
+                                composition: {
+                                  ...p.composition,
+                                  packageMembers: p.composition.packageMembers.filter(
+                                    (item) => item.id !== m.id
+                                  ),
+                                },
+                              }))
+                            }
+                            className="p-1 rounded text-rose-700 hover:bg-rose-100 cursor-pointer"
+                            title="Eliminar este archivo del paquete"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                      </div>
+                    </div>
+
+                    {isPrincipal ? (
+                      <div className="font-mono text-[11px] text-[#1E4E8C] font-semibold">
+                        Nombre resuelto: {resolvedMemberName}
+                      </div>
+                    ) : (
+                      <div className="space-y-1">
+                        <input
+                          type="text"
+                          aria-label={`Patrón de nombre del miembro ${idx + 1}`}
+                          disabled={isImmutable}
+                          value={m.fileNamePattern}
+                          onChange={(e) =>
+                            updateDraft((p) => ({
+                              ...p,
+                              composition: {
+                                ...p.composition,
+                                packageMembers: p.composition.packageMembers.map((item) =>
+                                  item.id === m.id
+                                    ? { ...item, fileNamePattern: e.target.value }
+                                    : item
+                                ),
+                              },
+                            }))
+                          }
+                          className="w-full border border-slate-300 rounded px-2 py-1 font-mono text-[11px] bg-white"
+                        />
+                        <div className="font-mono text-[10px] text-slate-600">
+                          Resuelto: {resolvedMemberName}
+                        </div>
+                      </div>
+                    )}
                   </div>
-                  <div className="font-mono text-[11px] text-[#1E4E8C]">
-                    {m.fileNamePattern}
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </div>
         </div>
       )}
 
-      {/* STEP 6: PRUEBAS (Validation Diagnostics, Preview & Real File Download) */}
+      {/* STEP 6: PRUEBAS (6-Dimension Readiness Matrix, Diagnostics, Preview & Download) */}
       {builderStep === 6 && (
         <div className="space-y-4">
           <div className="bg-white border border-slate-200 rounded-md p-5 flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
@@ -2132,46 +3389,279 @@ export const VisualOutputBuilderView: React.FC = () => {
                 Paso 6. Pruebas de configuración, validación y generación de archivo
               </h2>
               <p className="text-xs text-slate-600 mt-0.5">
-                Verifique que la estructura, las longitudes y los orígenes de datos estén completos antes de generar el archivo de prueba o publicar la versión.
+                Separa explícitamente el estado de la vista previa, la validación de configuración, la validación de datos DAQUE, la generación física y la descarga.
               </p>
+              {compiledResult.sourceExecutionSummary && (
+                <div className="mt-2 inline-flex flex-wrap items-center gap-1.5 px-2.5 py-1 rounded bg-slate-100 border border-slate-200 text-[11px] text-slate-800">
+                  <span className="font-bold text-[#1E4E8C]">Lote / Ejecución de origen fijada:</span>
+                  <span className="font-mono">{compiledResult.sourceExecutionSummary}</span>
+                </div>
+              )}
             </div>
 
             <div className="flex flex-wrap items-center gap-2.5 shrink-0">
+              {!isImmutable && (
+                <button
+                  type="button"
+                  onClick={handleManualSave}
+                  className="inline-flex items-center gap-1.5 px-3.5 py-2.5 rounded border border-slate-300 bg-white text-slate-800 hover:bg-slate-50 text-xs font-bold cursor-pointer"
+                >
+                  <Save className="w-3.5 h-3.5" />
+                  Guardar borrador
+                </button>
+              )}
               {isPhysicalEngineSupported ? (
-                <button
-                  type="button"
-                  disabled={blockingIssuesCount > 0}
-                  onClick={handleDownloadPreviewArtifact}
-                  className={`inline-flex items-center gap-2 px-4 py-2.5 rounded text-xs font-bold transition-colors ${
-                    blockingIssuesCount > 0
-                      ? 'bg-slate-200 text-slate-500 cursor-not-allowed'
-                      : 'bg-[#1E4E8C] text-white hover:bg-[#163A69] cursor-pointer shadow-xs'
-                  }`}
-                >
-                  <Download className="w-4 h-4" />
-                  Generar y descargar archivo de prueba ({compiledResult.fileName})
-                </button>
+                <div className="inline-flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    disabled={blockingIssuesCount > 0}
+                    onClick={handleDownloadPreviewArtifact}
+                    className={`inline-flex items-center gap-2 px-4 py-2.5 rounded text-xs font-bold transition-colors ${
+                      blockingIssuesCount > 0
+                        ? 'bg-slate-200 text-slate-500 cursor-not-allowed'
+                        : 'bg-[#1E4E8C] text-white hover:bg-[#163A69] cursor-pointer shadow-xs'
+                    }`}
+                  >
+                    <Download className="w-4 h-4" />
+                    Generar y descargar archivo físico ({compiledResult.fileName})
+                  </button>
+                  {blockingIssuesCount > 0 && (
+                    <HelpTooltip
+                      variant="disabled-reason"
+                      align="right"
+                      title="Descarga bloqueada por errores o falta de lote compatible"
+                      description="El sistema no genera ni descarga archivos operativos con errores bloqueantes de estructura, longitud o cuando no existe un lote compatible para la entidad y el periodo seleccionados."
+                      disabledReason={`Existen ${blockingIssuesCount} bloqueo(s) activo(s).`}
+                      enableRequirement="Seleccione o cargue un lote compatible en el Paso 3 y corrija los errores señalados."
+                    />
+                  )}
+                </div>
               ) : (
-                <button
-                  type="button"
-                  disabled
-                  className="inline-flex items-center gap-2 px-4 py-2.5 rounded text-xs font-semibold bg-slate-200 text-slate-600 cursor-not-allowed border border-slate-300"
-                  title="En esta versión solo están habilitados los generadores físicos para CSV, TXT y XML"
-                >
-                  <Lock className="w-4 h-4 text-slate-500" />
-                  Generación de archivo no disponible en esta versión ({selectedOutputType.family})
-                </button>
+                <div className="inline-flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    disabled
+                    className="inline-flex items-center gap-2 px-4 py-2.5 rounded text-xs font-semibold bg-slate-200 text-slate-600 cursor-not-allowed border border-slate-300"
+                  >
+                    <Lock className="w-4 h-4 text-slate-500" />
+                    Descarga binaria no disponible en navegador ({selectedOutputType.family})
+                  </button>
+                  <HelpTooltip
+                    variant="disabled-reason"
+                    align="right"
+                    label="¿Por qué no se descarga?"
+                    title={`Generación binaria ${selectedOutputType.family} en servidor`}
+                    description={`En esta versión web están habilitados los generadores físicos para CSV, TXT y XML. Para ${selectedOutputType.family} se valida el esquema y los registros lógicos, pero el binario requiere el motor "${selectedOutputType.serializationEngine}" en servidor.`}
+                    disabledReason={`El tipo de archivo ${selectedOutputType.family} no genera binario descargable en navegador.`}
+                    enableRequirement="Utilice CSV, TXT o XML para descargar archivos físicos en el navegador, o consulte el esquema validado en la vista previa."
+                  />
+                </div>
               )}
             </div>
           </div>
 
-          {/* Diagnostic Result Panel (Scenario 5: Detects errors and explains how to fix them) */}
+          {/* 4 Distinct Temporal & Provenance Concepts Card */}
+          <div className="bg-white border border-slate-200 rounded-md p-3.5 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 text-xs">
+            <div className="p-2.5 rounded border border-slate-200 bg-slate-50">
+              <div className="text-[10px] font-bold uppercase text-slate-500">
+                1. Periodo y entidad solicitados
+              </div>
+              <div className="font-mono font-bold text-[#1E4E8C] mt-0.5">
+                {globalPeriod} (Corte {getCutoffDateForPeriod(globalPeriod)})
+              </div>
+              <div className="text-[11px] text-slate-600 mt-0.5">
+                Entidad: <strong>{globalEntity}</strong>
+              </div>
+            </div>
+
+            <div
+              className={`p-2.5 rounded border ${
+                compiledResult.batchCompatibilityStatus === 'Compatible'
+                  ? 'border-emerald-200 bg-emerald-50/40'
+                  : 'border-rose-300 bg-rose-50/70'
+              }`}
+            >
+              <div className="text-[10px] font-bold uppercase text-slate-500">
+                2. Periodo y fecha de corte del lote
+              </div>
+              <div className="font-mono font-bold text-slate-900 mt-0.5">
+                {compiledResult.batchCutoffPeriod
+                  ? `${compiledResult.batchCutoffPeriod} (Corte ${compiledResult.batchCutoffDate || 'N/A'})`
+                  : 'Sin lote compatible en este corte'}
+              </div>
+              <div className="text-[11px] text-slate-600 mt-0.5">
+                Estado: <strong>{compiledResult.batchCompatibilityStatus || 'Sin lote'}</strong>
+              </div>
+            </div>
+
+            <div className="p-2.5 rounded border border-slate-200 bg-slate-50">
+              <div className="text-[10px] font-bold uppercase text-slate-500">
+                3. Fecha de ejecución o carga del lote
+              </div>
+              <div className="font-mono font-bold text-slate-900 mt-0.5">
+                {compiledResult.batchCreatedAt || 'N/A (Sin lote compatible)'}
+              </div>
+              <div className="text-[11px] text-slate-600 mt-0.5">
+                Las fechas del lote nunca se reescriben al cambiar de periodo
+              </div>
+            </div>
+
+            <div className="p-2.5 rounded border border-slate-200 bg-slate-50">
+              <div className="text-[10px] font-bold uppercase text-slate-500">
+                4. Fecha de generación / evaluación
+              </div>
+              <div className="font-mono font-bold text-slate-900 mt-0.5">
+                {compiledResult.artifactGeneratedAt || 'N/A'}
+              </div>
+              <div className="text-[11px] text-slate-600 mt-0.5">
+                Archivo objetivo: <span className="font-mono">{compiledResult.fileName}</span>
+              </div>
+            </div>
+          </div>
+
+          {compiledResult.batchCompatibilityStatus !== 'Compatible' && (
+            <div className="p-4 rounded-md border border-rose-300 bg-rose-50 text-rose-950 text-xs flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+              <div className="flex items-start gap-2.5">
+                <AlertTriangle className="w-5 h-5 text-rose-700 shrink-0 mt-0.5" />
+                <div className="space-y-1">
+                  <div className="font-bold text-sm text-rose-950">
+                    No hay un lote compatible para la entidad y el periodo seleccionados
+                  </div>
+                  <p className="text-rose-900">
+                    {compiledResult.batchCompatibilityDetail ||
+                      `No existe un lote ejecutado o cargado para la entidad "${globalEntity}" y el periodo "${globalPeriod}".`}{' '}
+                    Se conserva la referencia histórica en la configuración sin alterar sus fechas ni saldos, y se permite continuar el diseño y guardar borrador, pero se bloquea la declaración de conformidad de datos y la generación operativa hasta elegir o cargar un lote compatible.
+                  </p>
+                </div>
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => setBuilderStep(3)}
+                  className="px-3.5 py-2 rounded bg-rose-800 text-white font-bold hover:bg-rose-900 cursor-pointer"
+                >
+                  Elegir o cargar lote en Paso 3
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* 6-Dimension Readiness Matrix */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-2.5 text-xs">
+            <div className="p-3 rounded-md border border-slate-200 bg-white">
+              <div className="text-[10px] font-bold uppercase text-slate-500">
+                1. Vista previa
+              </div>
+              <div className="font-bold text-slate-900 mt-1">
+                {compiledResult.readinessMatrix.previewStatus.state}
+              </div>
+              <div className="text-[11px] text-slate-500 mt-0.5">
+                {compiledResult.readinessMatrix.previewStatus.detail}
+              </div>
+            </div>
+
+            <div
+              className={`p-3 rounded-md border ${
+                compiledResult.readinessMatrix.configValidationStatus.state === 'Con bloqueos'
+                  ? 'border-rose-300 bg-rose-50/70 text-rose-950'
+                  : 'border-emerald-200 bg-emerald-50/50 text-emerald-950'
+              }`}
+            >
+              <div className="text-[10px] font-bold uppercase opacity-75">
+                2. Validación configuración
+              </div>
+              <div className="font-bold mt-1">
+                {blockingIssuesCount > 0 ? `${blockingIssuesCount} Bloqueo(s)` : 'Válida (0 bloqueos)'}
+              </div>
+              <div className="text-[11px] opacity-85 mt-0.5">
+                {compiledResult.readinessMatrix.configValidationStatus.detail}
+              </div>
+            </div>
+
+            <div
+              className={`p-3 rounded-md border ${
+                compiledResult.readinessMatrix.dataValidationStatus.state ===
+                'Bloqueada por DAQUE'
+                  ? 'border-rose-300 bg-rose-50/70 text-rose-950'
+                  : 'border-slate-200 bg-white text-slate-900'
+              }`}
+            >
+              <div className="text-[10px] font-bold uppercase text-slate-500">
+                3. Validación datos (DAQUE)
+              </div>
+              <div className="font-bold mt-1">
+                {compiledResult.readinessMatrix.dataValidationStatus.state}
+              </div>
+              <div className="text-[11px] text-slate-500 mt-0.5">
+                {compiledResult.readinessMatrix.dataValidationStatus.detail}
+              </div>
+            </div>
+
+            <div
+              className={`p-3 rounded-md border ${
+                compiledResult.readinessMatrix.artifactGenerationStatus.state ===
+                'Archivo físico generado'
+                  ? 'border-emerald-200 bg-emerald-50/50 text-emerald-950'
+                  : compiledResult.readinessMatrix.artifactGenerationStatus.state ===
+                    'Bloqueado por errores'
+                  ? 'border-rose-300 bg-rose-50/70 text-rose-950'
+                  : 'border-amber-200 bg-amber-50/60 text-amber-950'
+              }`}
+            >
+              <div className="text-[10px] font-bold uppercase opacity-75">
+                4. Archivo físico
+              </div>
+              <div className="font-bold mt-1">
+                {compiledResult.readinessMatrix.artifactGenerationStatus.state}
+              </div>
+              <div className="text-[11px] opacity-85 mt-0.5">
+                {compiledResult.readinessMatrix.artifactGenerationStatus.detail}
+              </div>
+            </div>
+
+            <div className="p-3 rounded-md border border-slate-200 bg-white">
+              <div className="text-[10px] font-bold uppercase text-slate-500">
+                5. Descarga en navegador
+              </div>
+              <div className="font-bold text-slate-900 mt-1">
+                {compiledResult.readinessMatrix.downloadAvailabilityStatus.state}
+              </div>
+              <div className="text-[11px] text-slate-500 mt-0.5">
+                {compiledResult.readinessMatrix.downloadAvailabilityStatus.detail}
+              </div>
+            </div>
+
+            <div
+              className={`p-3 rounded-md border ${
+                compiledResult.readinessMatrix.deliveryReadinessStatus.state ===
+                'Lista para entrega'
+                  ? 'border-emerald-300 bg-emerald-50 text-emerald-950'
+                  : compiledResult.readinessMatrix.deliveryReadinessStatus.state.startsWith(
+                      'Validación superada'
+                    )
+                  ? 'border-blue-200 bg-blue-50 text-blue-950'
+                  : 'border-rose-300 bg-rose-50 text-rose-950'
+              }`}
+            >
+              <div className="text-[10px] font-bold uppercase opacity-75">
+                6. Estado para entrega
+              </div>
+              <div className="font-bold mt-1">
+                {compiledResult.readinessMatrix.deliveryReadinessStatus.state}
+              </div>
+              <div className="text-[11px] opacity-85 mt-0.5">
+                {compiledResult.readinessMatrix.deliveryReadinessStatus.detail}
+              </div>
+            </div>
+          </div>
+
+          {/* Diagnostic Result Panel + Physical File Output Preview */}
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
             <div className="lg:col-span-5 bg-white border border-slate-200 rounded-md p-4 space-y-3">
               <div className="flex items-center justify-between border-b border-slate-200 pb-2.5">
                 <h3 className="text-sm font-bold text-slate-900 flex items-center gap-1.5">
                   <FileCheck2 className="w-4 h-4 text-[#1E4E8C]" />
-                  Diagnóstico de la configuración
+                  Diagnóstico detallado de la configuración
                 </h3>
                 <span
                   className={`px-2 py-0.5 rounded text-xs font-bold ${
@@ -2190,21 +3680,37 @@ export const VisualOutputBuilderView: React.FC = () => {
               compiledResult.findings.filter(
                 (f) => f.layer !== 'Datos del formato (DAQUE)'
               ).length === 0 ? (
-                <div className="p-3.5 rounded bg-emerald-50 border border-emerald-200 text-xs text-emerald-950 space-y-1.5">
-                  <div className="font-bold flex items-center gap-1.5">
-                    <CheckCircle2 className="w-4 h-4 text-emerald-700 shrink-0" />
-                    Todos los controles estructurales y de origen de datos fueron superados
+                isPhysicalEngineSupported ? (
+                  <div className="p-3.5 rounded bg-emerald-50 border border-emerald-200 text-xs text-emerald-950 space-y-1.5">
+                    <div className="font-bold flex items-center gap-1.5">
+                      <CheckCircle2 className="w-4 h-4 text-emerald-700 shrink-0" />
+                      Controles superados — Archivo físico generado y disponible
+                    </div>
+                    <p>
+                      Los {draft.fields.length} campos cuentan con longitud válida, tipos consistentes y origen de datos asignado. El archivo físico{' '}
+                      <span className="font-mono font-semibold">
+                        {compiledResult.fileName}
+                      </span>{' '}
+                      está listo para descargarse y publicarse.
+                    </p>
                   </div>
-                  <p>
-                    Los {draft.fields.length} campos cuentan con longitud válida, tipos consistentes y origen de datos asignado. El archivo{' '}
-                    <span className="font-mono font-semibold">
-                      {compiledResult.fileName}
-                    </span>{' '}
-                    está listo para generarse y publicarse.
-                  </p>
-                </div>
+                ) : (
+                  <div className="p-3.5 rounded bg-blue-50 border border-blue-200 text-xs text-blue-950 space-y-1.5">
+                    <div className="font-bold flex items-center gap-1.5">
+                      <Info className="w-4 h-4 text-[#1E4E8C] shrink-0" />
+                      Configuración y esquema {selectedOutputType.family} válidos (Sin binario en navegador)
+                    </div>
+                    <p>
+                      Los {draft.fields.length} campos y el esquema {selectedOutputType.family} superaron todas las validaciones. En esta versión web no se genera el archivo binario descargable{' '}
+                      <span className="font-mono font-semibold">
+                        {compiledResult.fileName}
+                      </span>
+                      ; su serialización binaria se realiza en el servidor de reportes.
+                    </p>
+                  </div>
+                )
               ) : (
-                <div className="space-y-2.5">
+                <div className="space-y-2.5 max-h-80 overflow-y-auto">
                   {configDiagnostics.map((diag) => (
                     <div
                       key={diag.id}
@@ -2227,7 +3733,7 @@ export const VisualOutputBuilderView: React.FC = () => {
                         }}
                         className="inline-flex items-center gap-1 px-2.5 py-1 rounded bg-rose-800 text-white text-[11px] font-semibold hover:bg-rose-900 cursor-pointer"
                       >
-                        Ir al Paso {diag.step} para corregir
+                        Ir al campo afectado (Paso {diag.step})
                       </button>
                     </div>
                   ))}
@@ -2237,17 +3743,80 @@ export const VisualOutputBuilderView: React.FC = () => {
                     .map((f) => (
                       <div
                         key={f.id}
-                        className="p-3 rounded border border-amber-200 bg-amber-50 text-xs text-amber-950 space-y-1"
+                        className={`p-3 rounded border text-xs space-y-1.5 ${
+                          f.severity === 'Bloqueante'
+                            ? 'border-rose-200 bg-rose-50 text-rose-950'
+                            : 'border-amber-200 bg-amber-50 text-amber-950'
+                        }`}
                       >
-                        <div className="font-bold">
-                          [{f.code}] {f.location}
+                        <div className="font-bold flex items-center justify-between">
+                          <span>
+                            [{f.code}] {f.location}
+                          </span>
+                          <span className="text-[10px] font-bold">{f.severity}</span>
                         </div>
                         <p>{f.description}</p>
                         <p className="text-[11px]">
                           <strong>Cómo corregirlo:</strong> {f.suggestedAction}
                         </p>
+                        {f.fieldTechnicalName && (
+                          <div className="flex gap-2 pt-1">
+                            <button
+                              type="button"
+                              onClick={() => jumpToFieldByTechnicalName(f.fieldTechnicalName, 2)}
+                              className="px-2.5 py-1 rounded bg-slate-800 text-white text-[11px] font-semibold hover:bg-slate-900 cursor-pointer"
+                            >
+                              Ir al campo en Paso 2
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => jumpToFieldByTechnicalName(f.fieldTechnicalName, 3)}
+                              className="px-2.5 py-1 rounded border border-slate-400 bg-white text-slate-800 text-[11px] font-semibold hover:bg-slate-100 cursor-pointer"
+                            >
+                              Ir al mapeo en Paso 3
+                            </button>
+                          </div>
+                        )}
                       </div>
                     ))}
+                </div>
+              )}
+
+              {/* Historical Runs Notice if modified */}
+              {relatedRuns.length > 0 && (
+                <div className="pt-2 border-t border-slate-200 space-y-1.5 text-[11px]">
+                  <div className="font-bold text-slate-700">
+                    Corridas registradas para esta salida ({relatedRuns.length})
+                  </div>
+                  {relatedRuns.slice(0, 2).map((r) => {
+                    const isOutdated =
+                      r.isPreloadedDemo ||
+                      (r.configFingerprint && r.configFingerprint !== draft.fingerprint);
+                    return (
+                      <div
+                        key={r.id}
+                        className="p-2 rounded border border-slate-200 bg-slate-50 flex items-center justify-between gap-2"
+                      >
+                        <div>
+                          <span className="font-mono font-bold text-slate-800">
+                            {r.runCode}
+                          </span>{' '}
+                          · {r.createdAt}
+                        </div>
+                        {isOutdated ? (
+                          <span className="px-1.5 py-0.5 rounded bg-amber-100 text-amber-900 font-semibold text-[10px]">
+                            {r.isPreloadedDemo
+                              ? 'Precargado de demostración'
+                              : 'Ejecutado con configuración anterior'}
+                          </span>
+                        ) : (
+                          <span className="px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-900 font-semibold text-[10px]">
+                            Configuración actual
+                          </span>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
               )}
             </div>
@@ -2258,13 +3827,15 @@ export const VisualOutputBuilderView: React.FC = () => {
                 <div>
                   <h3 className="text-sm font-bold text-slate-900 flex items-center gap-1.5">
                     <FileCode2 className="w-4 h-4 text-[#1E4E8C]" />
-                    Resultado de generación con datos de prueba ({compiledResult.rowsProcessed} registros)
+                    {isPhysicalEngineSupported
+                      ? `Contenido físico generado (${compiledResult.rowsProcessed} registros · Corte ${globalPeriod})`
+                      : `Vista previa de esquema y estructura (${compiledResult.rowsProcessed} registros · Sin binario)`}
                   </h3>
                   <p className="text-[11px] text-slate-500">
-                    Archivo: <span className="font-mono">{compiledResult.fileName}</span>
+                    Archivo: <span className="font-mono">{compiledResult.fileName}</span> · {compiledResult.engineNotice}
                   </p>
                 </div>
-                <span className="font-mono text-[11px] text-slate-500">
+                <span className="font-mono text-[11px] text-slate-500 shrink-0">
                   {selectedOutputType.family} · {draft.composition.encoding}
                 </span>
               </div>
@@ -2284,11 +3855,61 @@ export const VisualOutputBuilderView: React.FC = () => {
           <div className="lg:col-span-7 bg-white border border-slate-200 rounded-md p-5 space-y-4">
             <div className="border-b border-slate-200 pb-3">
               <h2 className="text-base font-bold text-slate-900">
-                Paso 7. Resumen de configuración y publicación de versión
+                Paso 7. Resumen de configuración y ciclo de vida de la versión
               </h2>
               <p className="text-xs text-slate-600 mt-0.5">
-                Revise el resumen completo de la salida configurada, guarde su avance en borrador o publique la versión para habilitarla en los formatos regulatorios.
+                Verifique el estado actual de la versión ({draft.status}) y ejecute la transición que corresponda según el flujo de gobierno.
               </p>
+            </div>
+
+            {/* 5-Stage Lifecycle Pipeline Explanation */}
+            <div className="p-3 rounded border border-slate-200 bg-slate-50 text-xs space-y-2">
+              <div className="font-bold text-slate-800 flex items-center justify-between">
+                <span>Etapas del ciclo de vida de una salida configurada</span>
+                <HelpTooltip
+                  align="right"
+                  title="Separación de etapas de gobierno"
+                  description="1. Borrador: edición libre. 2. En revisión: validación funcional. 3. Aprobada: aval de gobierno e inmutabilidad. 4. Publicada: disponible en catálogo para asociar a formatos. 5. Asociada/Activada: vinculada a un formato y ambiente específico sin afectar a otros consumidores."
+                />
+              </div>
+              <div className="grid grid-cols-2 sm:grid-cols-5 gap-1.5 text-[11px]">
+                {(['Borrador', 'En revisión', 'Aprobada', 'Publicada'] as const).map(
+                  (stage, i) => {
+                    const isCurrent = draft.status === stage;
+                    return (
+                      <div
+                        key={stage}
+                        className={`p-2 rounded border text-center ${
+                          isCurrent
+                            ? 'bg-[#0F1F38] text-white border-[#0F1F38] font-bold'
+                            : 'bg-white text-slate-600 border-slate-200'
+                        }`}
+                      >
+                        <div>
+                          {i + 1}. {stage}
+                        </div>
+                        {isCurrent && (
+                          <div className="text-[9px] text-amber-300 uppercase mt-0.5">
+                            Estado actual
+                          </div>
+                        )}
+                      </div>
+                    );
+                  }
+                )}
+                <div
+                  className={`p-2 rounded border text-center ${
+                    linkedAssociations.some((a) => a.status === 'Activa')
+                      ? 'bg-emerald-50 text-emerald-950 border-emerald-300 font-bold'
+                      : 'bg-white text-slate-600 border-slate-200'
+                  }`}
+                >
+                  <div>5. Asociada</div>
+                  <div className="text-[9px] text-slate-500 mt-0.5">
+                    {linkedAssociations.length} formato(s)
+                  </div>
+                </div>
+              </div>
             </div>
 
             {/* Summary Grid */}
@@ -2313,7 +3934,7 @@ export const VisualOutputBuilderView: React.FC = () => {
                   {selectedOutputType.family} — {selectedOutputType.name}
                 </div>
                 <div className="text-[11px] text-slate-600 mt-0.5">
-                  Codificación: {draft.composition.encoding}
+                  Codificación: {draft.composition.encoding} · Certificación: {selectedOutputType.supportStatus}
                 </div>
               </div>
 
@@ -2322,48 +3943,60 @@ export const VisualOutputBuilderView: React.FC = () => {
                   Estructura y origen de datos
                 </div>
                 <div className="font-bold text-slate-900 mt-0.5">
-                  {draft.fields.length} campos configurados · {draft.validationRules.length} reglas
+                  {draft.fields.length} campos configurados · {draft.validationRules.filter((r) => r.enabled).length} reglas activas
                 </div>
                 <div className="text-[11px] text-slate-600 mt-0.5">
-                  Fuente: {selectedDataContract.code} ({selectedDataContract.name})
+                  Contrato: {selectedDataContract.code} ({selectedDataContract.name})
                 </div>
               </div>
 
               <div className="p-3 rounded border border-slate-200 bg-slate-50">
                 <div className="text-[11px] text-slate-500 font-semibold">
-                  Archivo resultante
+                  Nombre de archivo principal resuelto
                 </div>
                 <div className="font-mono font-bold text-[#1E4E8C] mt-0.5 truncate">
                   {compiledResult.fileName}
                 </div>
                 <div className="text-[11px] text-slate-600 mt-0.5">
-                  Empaquetado: {draft.composition.packaging}
+                  Empaquetado: {draft.composition.packaging} ({draft.composition.packageMembers.length} archivo(s))
                 </div>
               </div>
             </div>
 
-            {/* Warnings / Validation Gate before publishing */}
-            {blockingIssuesCount > 0 ? (
+            {/* State-aware Status Banner */}
+            {draft.status === 'Publicada' ? (
+              <div className="p-3.5 rounded bg-emerald-50 border border-emerald-300 text-xs text-emerald-950 flex items-start gap-2.5">
+                <CheckCircle2 className="w-4 h-4 text-emerald-700 shrink-0 mt-0.5" />
+                <div>
+                  <div className="font-bold">
+                    Esta versión (v{draft.version}) ya se encuentra PUBLICADA y vigente
+                  </div>
+                  <p className="mt-0.5">
+                    La versión v{draft.version} está protegida contra cambios directos y lista para vincularse a formatos regulatorios. Si requiere realizar modificaciones, pulse <strong>&quot;Crear nueva revisión en borrador&quot;</strong>.
+                  </p>
+                </div>
+              </div>
+            ) : blockingIssuesCount > 0 ? (
               <div className="p-3.5 rounded bg-rose-50 border border-rose-200 text-xs text-rose-950 flex items-start gap-2.5">
                 <ShieldAlert className="w-4 h-4 text-rose-700 shrink-0 mt-0.5" />
                 <div>
                   <div className="font-bold">
-                    No es posible publicar la versión mientras existan {blockingIssuesCount} error(es) bloqueante(s)
+                    No es posible aprobar ni publicar la versión mientras existan {blockingIssuesCount} error(es) bloqueante(s)
                   </div>
                   <p className="mt-0.5">
-                    Puede guardar su avance como Borrador y regresar al Paso 2 o Paso 3 para completar los campos pendientes.
+                    Puede guardar su avance como Borrador y regresar al Paso 2, Paso 3 o Paso 4 para corregir los puntos pendientes.
                   </p>
                 </div>
               </div>
             ) : (
-              <div className="p-3.5 rounded bg-emerald-50 border border-emerald-200 text-xs text-emerald-950 flex items-start gap-2.5">
-                <CheckCircle2 className="w-4 h-4 text-emerald-700 shrink-0 mt-0.5" />
+              <div className="p-3.5 rounded bg-blue-50 border border-blue-200 text-xs text-blue-950 flex items-start gap-2.5">
+                <CheckCircle2 className="w-4 h-4 text-[#1E4E8C] shrink-0 mt-0.5" />
                 <div>
                   <div className="font-bold">
-                    Configuración completa y verificada sin errores
+                    Configuración verificada sin bloqueos (Estado actual: {draft.status})
                   </div>
                   <p className="mt-0.5">
-                    La salida cumple todas las validaciones estructurales y está lista para su aprobación o publicación.
+                    La salida cumple todas las validaciones estructurales y está lista para avanzar en su flujo de publicación.
                   </p>
                 </div>
               </div>
@@ -2400,6 +4033,29 @@ export const VisualOutputBuilderView: React.FC = () => {
                     </button>
                   )}
 
+                  {draft.status === 'En revisión' && (
+                    <button
+                      type="button"
+                      disabled={blockingIssuesCount > 0}
+                      onClick={() => {
+                        saveConfiguredOutput(draft, true);
+                        transitionOutputStatus(
+                          draft.id,
+                          'Aprobada',
+                          'Versión aprobada técnicamente desde el Paso 7 del diseñador.'
+                        );
+                      }}
+                      className={`inline-flex items-center gap-1.5 px-4 py-2 rounded text-xs font-bold ${
+                        blockingIssuesCount > 0
+                          ? 'bg-slate-200 text-slate-500 cursor-not-allowed'
+                          : 'bg-blue-700 text-white hover:bg-blue-800 cursor-pointer'
+                      }`}
+                    >
+                      <CheckCircle2 className="w-3.5 h-3.5" />
+                      Aprobar versión v{draft.version}
+                    </button>
+                  )}
+
                   <button
                     type="button"
                     disabled={blockingIssuesCount > 0}
@@ -2415,14 +4071,27 @@ export const VisualOutputBuilderView: React.FC = () => {
                   </button>
                 </>
               ) : (
-                <button
-                  type="button"
-                  onClick={() => setShowRevisionModal(true)}
-                  className="inline-flex items-center gap-1.5 px-4 py-2 rounded bg-[#1E4E8C] text-white text-xs font-bold hover:bg-[#163A69] cursor-pointer"
-                >
-                  <GitBranch className="w-3.5 h-3.5" />
-                  Crear nueva revisión en borrador
-                </button>
+                <>
+                  {draft.status === 'Aprobada' && (
+                    <button
+                      type="button"
+                      disabled={blockingIssuesCount > 0}
+                      onClick={() => setShowPublishConfirmModal(true)}
+                      className="inline-flex items-center gap-1.5 px-4 py-2 rounded bg-emerald-700 text-white hover:bg-emerald-800 text-xs font-bold cursor-pointer"
+                    >
+                      <CheckCircle2 className="w-3.5 h-3.5" />
+                      Publicar versión aprobada v{draft.version}
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => setShowRevisionModal(true)}
+                    className="inline-flex items-center gap-1.5 px-4 py-2 rounded bg-[#1E4E8C] text-white text-xs font-bold hover:bg-[#163A69] cursor-pointer"
+                  >
+                    <GitBranch className="w-3.5 h-3.5" />
+                    Crear nueva revisión en borrador
+                  </button>
+                </>
               )}
 
               <button
@@ -2444,7 +4113,7 @@ export const VisualOutputBuilderView: React.FC = () => {
               </h3>
               {linkedAssociations.length === 0 ? (
                 <p className="text-slate-500">
-                  Esta salida aún no está asociada a ningún formato regulatorio. Use el botón &quot;Asociar a un formato regulatorio&quot; para vincularla.
+                  Esta salida aún no está asociada a ningún formato regulatorio. Use el botón &quot;Asociar a un formato regulatorio&quot; para vincularla en la pantalla D.
                 </p>
               ) : (
                 <div className="space-y-2">
@@ -2460,7 +4129,8 @@ export const VisualOutputBuilderView: React.FC = () => {
                             {fmt?.code} — {fmt?.name}
                           </div>
                           <div className="text-[11px] text-slate-500">
-                            Modalidad: {a.modality} · Ambiente: {a.environment}
+                            Modalidad: {a.modality} · Ambiente: {a.environment} · Estado:{' '}
+                            <strong>{a.status}</strong>
                           </div>
                         </div>
                         <span className="px-2 py-0.5 rounded bg-blue-100 text-[#1E4E8C] font-mono font-bold">
@@ -2513,8 +4183,8 @@ export const VisualOutputBuilderView: React.FC = () => {
         <div className="text-xs text-slate-500 font-medium">
           Paso <strong>{builderStep}</strong> de <strong>7</strong> ·{' '}
           {isImmutable
-            ? 'Modo consulta (versión protegida)'
-            : 'Los cambios se conservan automáticamente'}
+            ? `Modo consulta (versión ${draft.status} protegida)`
+            : `Autoguardado activo en navegador (${lastSavedAt})`}
         </div>
 
         <button

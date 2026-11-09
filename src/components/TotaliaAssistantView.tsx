@@ -10,6 +10,7 @@ import {
   X,
 } from 'lucide-react';
 import { useConfigurator } from '../context/ConfiguratorContext';
+import { HelpTooltip } from './HelpTooltip';
 
 export const TotaliaAssistantView: React.FC = () => {
   const {
@@ -46,14 +47,19 @@ export const TotaliaAssistantView: React.FC = () => {
           <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-[#1E4E8C]">
             <Sparkles className="w-4 h-4" />
             <span>
-              Módulo F · Acompañamiento Contextual y Comparación Normativa TOTALiA® (Simulación Asistida)
+              E.2 · Acompañamiento Contextual y Comparación Normativa TOTALiA® (Repositorio Normativo Precargado)
             </span>
           </div>
-          <h1 className="text-lg font-bold text-slate-900 mt-1">
-            Análisis Comparado de Cambio Normativo y Propuestas Explicables en Borrador
+          <h1 className="text-lg font-bold text-slate-900 mt-1 flex items-center gap-2">
+            <span>Análisis Comparado de Cambio Normativo y Propuestas Explicables en Borrador</span>
+            <HelpTooltip
+              title="Alcance real de TOTALiA® en esta versión"
+              description="En este entorno web, TOTALiA® evalúa las fuentes normativas precargadas (Circular Externa 028-2026 / Instructivo v2 vs v3 y esquema Avro v4) y aplica de forma real los ajustes aceptados sobre una revisión en Borrador."
+              consequence="La ingesta OCR/NLP en tiempo real de archivos PDF o XSD arbitrarios requiere el servicio documental backend de TOTALiA®."
+            />
           </h1>
           <p className="text-xs text-slate-600 mt-0.5">
-            TOTALiA® analiza fuentes normativas adjuntas (instructivos, esquemas XSD/Avro, muestras), señala el nivel de sustento y propone ajustes sobre borradores. <strong>Ninguna sugerencia aprueba, publica ni activa salidas automáticamente.</strong>
+            TOTALiA® analiza fuentes normativas registradas (instructivos, esquemas XSD/Avro, muestras), señala el nivel de sustento y aplica los cambios aceptados sobre una revisión en <strong>Borrador</strong>. <strong>Ninguna sugerencia aprueba, publica ni activa salidas automáticamente.</strong>
           </p>
         </div>
 
@@ -69,15 +75,15 @@ export const TotaliaAssistantView: React.FC = () => {
         </div>
       </div>
 
-      {/* Normative Sources & Version Comparison Bar (Matching Figure 10 top bar) */}
+      {/* Normative Sources & Version Comparison Bar */}
       <div className="bg-white border border-slate-200 rounded-md p-4 space-y-3">
         <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-2 pb-2.5 border-b border-slate-200">
           <h2 className="text-sm font-bold text-slate-900 flex items-center gap-2">
             <FileDiff className="w-4 h-4 text-[#1E4E8C]" />
-            Comparación de Fuentes Normativas Registradas (Escenario Cambio Normativo DEMO v2 vs. DEMO v3)
+            <span>Comparación de Fuentes Normativas Registradas (Escenario Cambio Normativo DEMO v2 vs. DEMO v3)</span>
           </h2>
           <span className="text-[11px] font-semibold px-2.5 py-0.5 rounded bg-blue-50 text-[#1E4E8C] border border-blue-200">
-            Modo de Asistencia Simulada con Trazabilidad de Evidencia
+            Fuentes normativas precargadas con trazabilidad de evidencia
           </span>
         </div>
 
@@ -125,7 +131,7 @@ export const TotaliaAssistantView: React.FC = () => {
         <div className="pt-2">
           <div className="text-[11px] font-bold uppercase text-slate-600 mb-2 flex items-center gap-1.5">
             <BookOpen className="w-3.5 h-3.5 text-[#1E4E8C]" />
-            Repositorio de Evidencias y Fuentes Normativas Vinculadas
+            Repositorio de Evidencias y Fuentes Normativas Vinculadas (Precargado)
           </div>
           <div className="overflow-x-auto">
             <table className="w-full text-left border-collapse text-xs">
@@ -187,8 +193,13 @@ export const TotaliaAssistantView: React.FC = () => {
       <div className="bg-white border border-slate-200 rounded-md p-4 space-y-4">
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 pb-3">
           <div>
-            <h2 className="text-sm font-bold text-slate-900">
-              Propuestas Explicables de TOTALiA® ({filteredSuggestions.length})
+            <h2 className="text-sm font-bold text-slate-900 flex items-center gap-2">
+              <span>Propuestas Explicables de TOTALiA® ({filteredSuggestions.length})</span>
+              <HelpTooltip
+                title="¿Qué ocurre al pulsar 'Aceptar en Borrador'?"
+                description="Si la salida objetivo está Publicada o Aprobada, el configurador crea automáticamente una nueva revisión en estado Borrador (ej. v2.2) y aplica el cambio estructural sobre ese borrador."
+                consequence="Puede abrir el Diseñador inmediatamente para verificar el campo actualizado o agregado antes de aprobarlo."
+              />
             </h2>
             <p className="text-xs text-slate-600">
               Cada propuesta indica el elemento afectado, el valor actual frente al propuesto, la fuente normativa exacta y el impacto sobre formatos consumidores.
@@ -342,10 +353,10 @@ export const TotaliaAssistantView: React.FC = () => {
                     {targetOut && (
                       <button
                         type="button"
-                        onClick={() => openOutputInBuilder(targetOut.id, 3)}
+                        onClick={() => openOutputInBuilder(targetOut.id, 2)}
                         className="text-xs font-semibold text-[#1E4E8C] hover:underline mt-1 cursor-pointer"
                       >
-                        Inspeccionar en Constructor →
+                        Inspeccionar en Diseñador →
                       </button>
                     )}
                   </div>

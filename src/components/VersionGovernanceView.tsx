@@ -17,6 +17,7 @@ import {
 import { useConfigurator } from '../context/ConfiguratorContext';
 import { analyzeVersionImpact } from '../domain/engine';
 import { LifecycleStatus } from '../domain/types';
+import { HelpTooltip } from './HelpTooltip';
 import { TotaliaAssistantView } from './TotaliaAssistantView';
 
 export const VersionGovernanceView: React.FC = () => {
@@ -28,6 +29,7 @@ export const VersionGovernanceView: React.FC = () => {
     regulatoryFormats,
     environmentDeployments,
     totaliaSuggestions,
+    activeUserRole,
     createNewRevisionFromOutput,
     deriveVariantFromOutput,
     duplicateOutputIndependently,
@@ -89,6 +91,22 @@ export const VersionGovernanceView: React.FC = () => {
   const isImmutable =
     currentOutput.status === 'Publicada' || currentOutput.status === 'Aprobada';
 
+  const getTransitionRequirementText = (target: LifecycleStatus): string => {
+    if (target === 'En revisión') {
+      return 'Envía un Borrador a revisión funcional y técnica.';
+    }
+    if (target === 'Aprobada') {
+      return 'Aprueba normativamente la salida y congela su estructura contra edición directa. Rol recomendado: Aprobador Normativo.';
+    }
+    if (target === 'Publicada') {
+      return 'Publica la versión para que pueda asociarse a formatos regulatorios e instalarse en ambientes.';
+    }
+    if (target === 'Descontinuada') {
+      return 'Retira la versión de nuevas asociaciones conservando su trazabilidad histórica.';
+    }
+    return '';
+  };
+
   return (
     <div className="space-y-5">
       {/* Top Header with Contextual TOTALiA Tab Switcher */}
@@ -98,8 +116,14 @@ export const VersionGovernanceView: React.FC = () => {
             <GitBranch className="w-4 h-4" />
             <span>E. Versiones y publicación · Historial, Aprobaciones y Cambio Normativo</span>
           </div>
-          <h1 className="text-xl font-bold text-slate-900 mt-0.5">
-            Control de Versiones, Aprobación y Publicación
+          <h1 className="text-xl font-bold text-slate-900 mt-0.5 flex items-center gap-2">
+            <span>Control de Versiones, Aprobación y Publicación</span>
+            <HelpTooltip
+              title="Gobierno de versiones e inmutabilidad"
+              description="Las salidas en estado Aprobada o Publicada están protegidas contra edición directa para garantizar la trazabilidad de auditoría regulatoria."
+              example="Para modificar DEMO-CE-01 (v2.1 Publicada), utilice 'Crear nueva revisión y editar' para abrir el borrador v2.2 sin afectar los formatos vigentes."
+              consequence="Los formatos asociados continúan operando en la versión anterior hasta que un usuario autorizado adopte la nueva versión."
+            />
           </h1>
           <p className="text-xs text-slate-600 mt-1 max-w-3xl">
             Administre las revisiones de cada salida, identifique qué formatos utilizan versiones anteriores, evalúe impactos normativos con TOTALiA® y active versiones por ambiente.
@@ -219,8 +243,12 @@ export const VersionGovernanceView: React.FC = () => {
 
               <div className="lg:col-span-7 space-y-2.5">
                 <div>
-                  <label className="block text-[11px] font-semibold uppercase text-slate-600 mb-1">
-                    Justificación del cambio de estado o nueva revisión
+                  <label className="block text-[11px] font-semibold uppercase text-slate-600 mb-1 flex items-center gap-1">
+                    <span>Justificación del cambio de estado o nueva revisión (Rol activo: {activeUserRole})</span>
+                    <HelpTooltip
+                      title="Trazabilidad de autoría y justificación"
+                      description="Cada transición de estado o creación de revisión registra el rol activo, la fecha/hora real y el motivo declarado en la bitácora inmutable de la salida."
+                    />
                   </label>
                   <input
                     type="text"
@@ -231,42 +259,65 @@ export const VersionGovernanceView: React.FC = () => {
                 </div>
 
                 <div className="flex flex-wrap items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const created = createNewRevisionFromOutput(
-                        currentOutput.id,
-                        justificationText
-                      );
-                      if (created) {
-                        openOutputInBuilder(created.id, 2);
-                      }
-                    }}
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded bg-[#1E4E8C] text-white text-xs font-semibold hover:bg-[#163A69] cursor-pointer"
-                  >
-                    <GitCommit className="w-3.5 h-3.5" />
-                    Crear nueva revisión y editar
-                  </button>
+                  <div className="inline-flex items-center gap-1">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const created = createNewRevisionFromOutput(
+                          currentOutput.id,
+                          justificationText
+                        );
+                        if (created) {
+                          openOutputInBuilder(created.id, 2);
+                        }
+                      }}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded bg-[#1E4E8C] text-white text-xs font-semibold hover:bg-[#163A69] cursor-pointer"
+                    >
+                      <GitCommit className="w-3.5 h-3.5" />
+                      Crear nueva revisión y editar
+                    </button>
+                    <HelpTooltip
+                      title="Crear revisión"
+                      description="Crea un borrador vinculado a la salida actual con número de versión incrementado, conservando intacta la versión publicada."
+                    />
+                  </div>
 
                   {(
                     ['En revisión', 'Aprobada', 'Publicada', 'Descontinuada'] as LifecycleStatus[]
-                  ).map((st) => (
-                    <button
-                      key={st}
-                      type="button"
-                      disabled={currentOutput.status === st}
-                      onClick={() =>
-                        transitionOutputStatus(currentOutput.id, st, justificationText)
-                      }
-                      className={`px-2.5 py-1.5 rounded border text-xs font-semibold transition-colors cursor-pointer ${
-                        currentOutput.status === st
-                          ? 'border-slate-200 bg-slate-100 text-slate-400 cursor-not-allowed'
-                          : 'border-slate-300 bg-white text-slate-800 hover:bg-slate-50'
-                      }`}
-                    >
-                      Pasar a {st}
-                    </button>
-                  ))}
+                  ).map((st) => {
+                    const isAlreadyInState = currentOutput.status === st;
+                    return (
+                      <div key={st} className="inline-flex items-center gap-1">
+                        <button
+                          type="button"
+                          disabled={isAlreadyInState}
+                          onClick={() =>
+                            transitionOutputStatus(currentOutput.id, st, justificationText)
+                          }
+                          className={`px-2.5 py-1.5 rounded border text-xs font-semibold transition-colors ${
+                            isAlreadyInState
+                              ? 'border-slate-200 bg-slate-100 text-slate-400 cursor-not-allowed'
+                              : 'border-slate-300 bg-white text-slate-800 hover:bg-slate-50 cursor-pointer'
+                          }`}
+                        >
+                          Pasar a {st}
+                        </button>
+                        {isAlreadyInState ? (
+                          <HelpTooltip
+                            variant="disabled-reason"
+                            title={`Opción deshabilitada: Ya está en '${st}'`}
+                            description={`La salida ${currentOutput.code} (v${currentOutput.version}) ya se encuentra en el estado '${st}'.`}
+                            consequence="Seleccione otro estado del ciclo de vida o cree una nueva revisión en Borrador."
+                          />
+                        ) : (
+                          <HelpTooltip
+                            title={`Transición a '${st}'`}
+                            description={getTransitionRequirementText(st)}
+                          />
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
             </div>
@@ -278,8 +329,13 @@ export const VersionGovernanceView: React.FC = () => {
             <div className="lg:col-span-7 bg-white border border-slate-200 rounded-md p-4 space-y-3">
               <div className="flex items-center justify-between border-b border-slate-200 pb-2.5">
                 <div>
-                  <h2 className="text-sm font-bold text-slate-900">
-                    Formatos regulatorios que utilizan esta salida o su versión anterior
+                  <h2 className="text-sm font-bold text-slate-900 flex items-center gap-2">
+                    <span>Formatos regulatorios que utilizan esta salida o su versión anterior</span>
+                    <HelpTooltip
+                      title="Adopción controlada por formato consumidor"
+                      description="Cuando una salida es reutilizada por varios formatos (ej. DEMO-01 y DEMO-02), publicar una nueva versión no fuerza su cambio en todos los formatos al mismo tiempo."
+                      consequence="Cada formato puede actualizarse a la nueva versión de forma independiente mediante el botón 'Pasar a v...'."
+                    />
                   </h2>
                   <p className="text-xs text-slate-600">
                     Crear una nueva versión no altera automáticamente los formatos vigentes. Aquí puede actualizar cada formato a la versión{' '}
@@ -375,8 +431,12 @@ export const VersionGovernanceView: React.FC = () => {
             {/* Controlled Variant Derivation vs Independent Cloning (5 cols) */}
             <div className="lg:col-span-5 bg-white border border-slate-200 rounded-md p-4 space-y-3">
               <div className="border-b border-slate-200 pb-2.5">
-                <h2 className="text-sm font-bold text-slate-900">
-                  Crear variante o duplicar salida
+                <h2 className="text-sm font-bold text-slate-900 flex items-center gap-2">
+                  <span>Crear variante o duplicar salida</span>
+                  <HelpTooltip
+                    title="Diferencia entre Variante y Duplicado independiente"
+                    description="• Crear variante: Mantiene el vínculo genealógico con la salida base para comparar diferencias normativas. • Duplicar: Crea una salida totalmente independiente con otro código en v1.0 Borrador."
+                  />
                 </h2>
                 <p className="text-xs text-slate-600">
                   Elija si desea crear una variante trazable o una copia independiente.
@@ -465,6 +525,11 @@ export const VersionGovernanceView: React.FC = () => {
                         <span className="font-mono text-slate-500">{vh.createdAt}</span>
                       </div>
                       <div className="text-slate-700 mt-0.5">{vh.justification}</div>
+                      {vh.isPreloadedDemo && (
+                        <span className="inline-block mt-1 px-1.5 py-0.5 rounded bg-slate-200 text-slate-700 text-[10px]">
+                          Hito precargado de demostración
+                        </span>
+                      )}
                     </div>
                   ))}
                 </div>
@@ -478,10 +543,15 @@ export const VersionGovernanceView: React.FC = () => {
               <div>
                 <h2 className="text-sm font-bold text-slate-900 flex items-center gap-2">
                   <Server className="w-4 h-4 text-[#1E4E8C]" />
-                  Activación de versiones por ambiente (QA y Producción)
+                  <span>Activación de versiones por ambiente (QA y Producción)</span>
+                  <HelpTooltip
+                    title="Flujo de distribución e instalación por ambiente"
+                    description="1. Verificar paquete: comprueba la huella SHA-256 y dependencias. 2. Instalar: descarga y registra la versión disponible como instalada en el ambiente sin activarla aún. 3. Activar: conmuta la versión activa que se usa en generación."
+                    consequence="Si el ambiente reporta 'Bloqueado por dependencia' (ej. falta un catálogo regulatorio), la activación se impide hasta resolver el prerrequisito."
+                  />
                 </h2>
                 <p className="text-xs text-slate-600">
-                  Permite instalar, activar o revertir la versión de una configuración en cada ambiente.
+                  Permite instalar, activar o revertir la versión de una configuración en cada ambiente, distinguiendo la versión Disponible, Instalada y Activa.
                 </p>
               </div>
             </div>
@@ -489,6 +559,16 @@ export const VersionGovernanceView: React.FC = () => {
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
               {environmentDeployments.map((dep) => {
                 const isBlocked = dep.compatibilityStatus === 'Bloqueado por dependencia';
+                const linkedAssoc = associations.find(
+                  (a) => {
+                    const f = regulatoryFormats.find((rf) => rf.id === a.formatId);
+                    return f?.code === dep.formatCode;
+                  }
+                );
+                const linkedOut = configuredOutputs.find(
+                  (o) => o.id === linkedAssoc?.configuredOutputId
+                );
+
                 return (
                   <div
                     key={dep.id}
@@ -504,8 +584,15 @@ export const VersionGovernanceView: React.FC = () => {
                         </span>
                       </div>
 
-                      <div className="text-[11px] text-slate-600 mt-1 font-mono">
-                        Formato: <strong>{dep.formatCode}</strong>
+                      <div className="text-[11px] text-slate-600 mt-1 font-mono flex flex-wrap items-center justify-between gap-1">
+                        <span>
+                          Formato: <strong>{dep.formatCode}</strong>
+                        </span>
+                        {linkedOut && (
+                          <span className="text-[#1E4E8C] font-semibold">
+                            Salida: {linkedOut.code}
+                          </span>
+                        )}
                       </div>
 
                       <div className="grid grid-cols-3 gap-2 my-3 text-center">
@@ -559,7 +646,7 @@ export const VersionGovernanceView: React.FC = () => {
                         </div>
                       </div>
 
-                      <div className="flex flex-wrap gap-1.5 mb-3">
+                      <div className="flex flex-wrap items-center gap-1.5 mb-3">
                         <button
                           type="button"
                           onClick={() => runEnvironmentAction(dep.id, 'Descargar')}
@@ -574,14 +661,32 @@ export const VersionGovernanceView: React.FC = () => {
                         >
                           2. Instalar v{dep.availableVersion}
                         </button>
-                        <button
-                          type="button"
-                          onClick={() => runEnvironmentAction(dep.id, 'Activar')}
-                          className="px-2.5 py-1 rounded bg-[#1E4E8C] hover:bg-[#163A69] text-[11px] font-semibold text-white inline-flex items-center gap-1 cursor-pointer"
-                        >
-                          <Play className="w-3 h-3" />
-                          3. Activar v{dep.installedVersion}
-                        </button>
+                        <div className="inline-flex items-center gap-1">
+                          <button
+                            type="button"
+                            disabled={isBlocked}
+                            onClick={() => runEnvironmentAction(dep.id, 'Activar')}
+                            className={`px-2.5 py-1 rounded text-[11px] font-semibold inline-flex items-center gap-1 ${
+                              isBlocked
+                                ? 'bg-slate-200 text-slate-500 cursor-not-allowed border border-slate-300'
+                                : 'bg-[#1E4E8C] hover:bg-[#163A69] text-white cursor-pointer'
+                            }`}
+                          >
+                            <Play className="w-3 h-3" />
+                            3. Activar v{dep.installedVersion}
+                          </button>
+                          {isBlocked && (
+                            <HelpTooltip
+                              variant="disabled-reason"
+                              title="Activación bloqueada por dependencia"
+                              description={
+                                dep.blockingReason ||
+                                'Falta un prerrequisito técnico o catálogo en este ambiente.'
+                              }
+                              consequence="Instale primero el catálogo requerido o utilice 'Revertir' para mantener la versión compatible anterior."
+                            />
+                          )}
+                        </div>
                         {dep.previousCompatibleVersion && (
                           <button
                             type="button"

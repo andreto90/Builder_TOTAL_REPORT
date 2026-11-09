@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
 import {
+  CatalogSourceFormatEntry,
   ConfiguredOutput,
   DaqueFormatProfile,
   DataContract,
@@ -11,6 +12,7 @@ import {
   NormativeSourceDoc,
   OutputType,
   RegulatoryFormat,
+  SourceExecutionBatch,
   StructureField,
   TotaliaSuggestion,
   TransmissionType,
@@ -18,6 +20,7 @@ import {
 } from '../domain/types';
 import {
   INITIAL_ASSOCIATIONS,
+  INITIAL_CATALOG_SOURCE_FORMATS,
   INITIAL_CONFIGURED_OUTPUTS,
   INITIAL_DAQUE_PROFILES,
   INITIAL_DATA_CONTRACTS,
@@ -30,7 +33,7 @@ import {
   INITIAL_TOTALIA_SUGGESTIONS,
   INITIAL_TRANSMISSION_TYPES,
 } from '../domain/seedData';
-import { generateOutputArtifact } from '../domain/engine';
+import { analyzeSourceStructureUpdateImpact, generateOutputArtifact } from '../domain/engine';
 
 export type ActiveModuleView =
   | 'dashboard'
@@ -40,6 +43,33 @@ export type ActiveModuleView =
   | 'governance'
   | 'totalia'
   | 'simulator';
+
+function getNowDate(): string {
+  const d = new Date();
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
+  return `${yyyy}-${mm}-${dd}`;
+}
+
+function getNowDateTime(): string {
+  const d = new Date();
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
+  const hh = String(d.getHours()).padStart(2, '0');
+  const min = String(d.getMinutes()).padStart(2, '0');
+  const ss = String(d.getSeconds()).padStart(2, '0');
+  return `${yyyy}-${mm}-${dd} ${hh}:${min}:${ss}`;
+}
+
+function getNowTimeOnly(): string {
+  const d = new Date();
+  const hh = String(d.getHours()).padStart(2, '0');
+  const min = String(d.getMinutes()).padStart(2, '0');
+  const ss = String(d.getSeconds()).padStart(2, '0');
+  return `${hh}:${min}:${ss}`;
+}
 
 interface ConfiguratorContextValue {
   // Navigation & Global Context
@@ -57,11 +87,13 @@ interface ConfiguratorContextValue {
   setGlobalEntity: (ent: string) => void;
   activeUserRole: UserRole;
   setActiveUserRole: (role: UserRole) => void;
+  lastSavedAt: string;
 
   // Domain Repositories
   outputTypes: OutputType[];
   configuredOutputs: ConfiguredOutput[];
   dataContracts: DataContract[];
+  catalogSourceFormats: CatalogSourceFormatEntry[];
   daqueProfiles: DaqueFormatProfile[];
   regulatoryFormats: RegulatoryFormat[];
   transmissionTypes: TransmissionType[];
@@ -79,6 +111,16 @@ interface ConfiguratorContextValue {
 
   // Actions — Output Types
   saveOutputType: (typeItem: OutputType) => void;
+
+  // Actions — Data Sources, Structures & Execution Batches (Paso 3)
+  saveDataContract: (contract: DataContract, propagateImpactToOutputId?: string) => void;
+  saveCatalogSourceFormat: (entry: CatalogSourceFormatEntry) => void;
+  importCatalogEntriesBatch: (
+    entries: CatalogSourceFormatEntry[],
+    mode: 'reconcile' | 'append'
+  ) => void;
+  registerStructureForCatalogEntry: (catalogId: string, contract: DataContract) => void;
+  addExecutionBatchToContract: (contractId: string, batch: SourceExecutionBatch) => void;
 
   // Actions — Configured Outputs & Versioning
   openOutputInBuilder: (outputId: string, step?: number) => void;
@@ -121,15 +163,18 @@ interface ConfiguratorContextValue {
   // Persistence Export / Import / Reset
   exportDomainJson: () => string;
   importDomainJson: (rawJson: string) => boolean;
+  restoreBackupSnapshot: () => boolean;
   resetDemoData: () => void;
 }
 
-const STORAGE_KEY = 'total_report_configurator_state_v12';
+const STORAGE_KEY = 'total_report_configurator_state_v15';
+const LEGACY_STORAGE_KEY = 'total_report_configurator_state_v14';
+const BACKUP_STORAGE_KEY = 'total_report_configurator_backup_v14';
 
 const ConfiguratorContext = createContext<ConfiguratorContextValue | undefined>(undefined);
 
 export const ConfiguratorProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [activeModule, setActiveModule] = useState<ActiveModuleView>('dashboard');
+  const [activeModuleState, setActiveModuleState] = useState<ActiveModuleView>('dashboard');
   const [selectedOutputId, setSelectedOutputId] = useState<string>('OUT-CSV-DEMO-A');
   const [preselectedAssocOutputId, setPreselectedAssocOutputId] = useState<string | null>(null);
   const [activeBuilderStep, setActiveBuilderStep] = useState<number>(1);
@@ -137,10 +182,14 @@ export const ConfiguratorProvider: React.FC<{ children: React.ReactNode }> = ({ 
   const [globalEnvironment, setGlobalEnvironment] = useState<'QA' | 'Producción'>('QA');
   const [globalEntity, setGlobalEntity] = useState<string>('Entidad DEMO');
   const [activeUserRole, setActiveUserRole] = useState<UserRole>('Implementador técnico / regulatorio');
+  const [lastSavedAt, setLastSavedAt] = useState<string>(getNowTimeOnly());
 
   const [outputTypes, setOutputTypes] = useState<OutputType[]>(INITIAL_OUTPUT_TYPES);
   const [configuredOutputs, setConfiguredOutputs] = useState<ConfiguredOutput[]>(INITIAL_CONFIGURED_OUTPUTS);
-  const [dataContracts] = useState<DataContract[]>(INITIAL_DATA_CONTRACTS);
+  const [dataContracts, setDataContracts] = useState<DataContract[]>(INITIAL_DATA_CONTRACTS);
+  const [catalogSourceFormats, setCatalogSourceFormats] = useState<CatalogSourceFormatEntry[]>(
+    INITIAL_CATALOG_SOURCE_FORMATS
+  );
   const [daqueProfiles] = useState<DaqueFormatProfile[]>(INITIAL_DAQUE_PROFILES);
   const [regulatoryFormats] = useState<RegulatoryFormat[]>(INITIAL_REGULATORY_FORMATS);
   const [transmissionTypes] = useState<TransmissionType[]>(INITIAL_TRANSMISSION_TYPES);
@@ -164,14 +213,96 @@ export const ConfiguratorProvider: React.FC<{ children: React.ReactNode }> = ({ 
 
   const clearBanner = () => setBannerMessage(null);
 
-  // Load persisted state from localStorage
+  // Clear stale banners when switching top-level screens from the menu
+  const setActiveModule = (m: ActiveModuleView) => {
+    if (m !== activeModuleState) {
+      setBannerMessage(null);
+    }
+    setActiveModuleState(m);
+  };
+
+  // Load persisted state from localStorage with non-destructive backup and catalog reconciliation
   useEffect(() => {
     try {
-      const saved = localStorage.getItem(STORAGE_KEY);
-      if (saved) {
-        const parsed = JSON.parse(saved);
+      const savedV15 = localStorage.getItem(STORAGE_KEY);
+      const savedV14 = localStorage.getItem(LEGACY_STORAGE_KEY);
+      if (savedV14 && !localStorage.getItem(BACKUP_STORAGE_KEY)) {
+        localStorage.setItem(BACKUP_STORAGE_KEY, savedV14);
+      }
+      const rawToLoad = savedV15 || savedV14;
+      if (rawToLoad) {
+        const parsed = JSON.parse(rawToLoad);
         if (parsed.outputTypes) setOutputTypes(parsed.outputTypes);
-        if (parsed.configuredOutputs) setConfiguredOutputs(parsed.configuredOutputs);
+        if (parsed.configuredOutputs && Array.isArray(parsed.configuredOutputs)) {
+          const seedMap = new Map(INITIAL_CONFIGURED_OUTPUTS.map((o) => [o.id, o]));
+          const reconciledOutputs = parsed.configuredOutputs.map((o: ConfiguredOutput) => {
+            const seed = seedMap.get(o.id);
+            const normalizedCatId =
+              o.sourceCatalogEntryId === 'CAT-PE-411'
+                ? 'CAT-PE-440'
+                : o.sourceCatalogEntryId || seed?.sourceCatalogEntryId;
+            return {
+              ...o,
+              sourceCatalogEntryId: normalizedCatId,
+              selectedSourceExecutionId:
+                o.selectedSourceExecutionId || seed?.selectedSourceExecutionId,
+            };
+          });
+          setConfiguredOutputs(reconciledOutputs);
+        }
+        if (parsed.dataContracts && Array.isArray(parsed.dataContracts)) {
+          const seedContractMap = new Map(INITIAL_DATA_CONTRACTS.map((c) => [c.id, c]));
+          const mergedContracts = parsed.dataContracts.map((c: DataContract) => {
+            const seed = seedContractMap.get(c.id);
+            if (!seed) return c;
+            const existingBatchIds = new Set((c.executionBatches || []).map((b) => b.id));
+            const missingSeedBatches = (seed.executionBatches || []).filter(
+              (b) => !existingBatchIds.has(b.id)
+            );
+            const reconciledBatches = [
+              ...(c.executionBatches || []).map((b) => {
+                const seedBatch = (seed.executionBatches || []).find((sb) => sb.id === b.id);
+                return seedBatch
+                  ? {
+                      ...b,
+                      cutoffDate: b.cutoffDate || seedBatch.cutoffDate,
+                      sourceCatalogEntryId:
+                        b.sourceCatalogEntryId || seedBatch.sourceCatalogEntryId,
+                      sourceStructureVersion:
+                        b.sourceStructureVersion || seedBatch.sourceStructureVersion,
+                    }
+                  : b;
+              }),
+              ...missingSeedBatches,
+            ];
+            return {
+              ...c,
+              executionBatches: reconciledBatches,
+            };
+          });
+          const existingIds = new Set(mergedContracts.map((c: DataContract) => c.id));
+          const missingSeed = INITIAL_DATA_CONTRACTS.filter((c) => !existingIds.has(c.id));
+          setDataContracts([...mergedContracts, ...missingSeed]);
+        }
+        if (parsed.catalogSourceFormats && Array.isArray(parsed.catalogSourceFormats)) {
+          const seedCatById = new Map(INITIAL_CATALOG_SOURCE_FORMATS.map((e) => [e.id, e]));
+          // Remove deprecated erroneous seed IDs (CAT-PE-411, CAT-PE-501) and update corrected seed entries
+          const filteredPersisted = parsed.catalogSourceFormats
+            .filter(
+              (e: CatalogSourceFormatEntry) => e.id !== 'CAT-PE-411' && e.id !== 'CAT-PE-501'
+            )
+            .map((e: CatalogSourceFormatEntry) => {
+              const seedEntry = seedCatById.get(e.id);
+              return seedEntry ? { ...seedEntry, linkedDataContractId: e.linkedDataContractId || seedEntry.linkedDataContractId } : e;
+            });
+          const existingCatIds = new Set(
+            filteredPersisted.map((e: CatalogSourceFormatEntry) => e.id)
+          );
+          const missingCatSeed = INITIAL_CATALOG_SOURCE_FORMATS.filter(
+            (e) => !existingCatIds.has(e.id)
+          );
+          setCatalogSourceFormats([...filteredPersisted, ...missingCatSeed]);
+        }
         if (parsed.associations) setAssociations(parsed.associations);
         if (parsed.environmentDeployments) setEnvironmentDeployments(parsed.environmentDeployments);
         if (parsed.totaliaSuggestions) setTotaliaSuggestions(parsed.totaliaSuggestions);
@@ -188,18 +319,23 @@ export const ConfiguratorProvider: React.FC<{ children: React.ReactNode }> = ({ 
       const payload = {
         outputTypes,
         configuredOutputs,
+        dataContracts,
+        catalogSourceFormats,
         associations,
         environmentDeployments,
         totaliaSuggestions,
         executionRuns,
       };
       localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
+      setLastSavedAt(getNowTimeOnly());
     } catch {
       // Ignore quota errors
     }
   }, [
     outputTypes,
     configuredOutputs,
+    dataContracts,
+    catalogSourceFormats,
     associations,
     environmentDeployments,
     totaliaSuggestions,
@@ -209,49 +345,237 @@ export const ConfiguratorProvider: React.FC<{ children: React.ReactNode }> = ({ 
   const openOutputInBuilder = (outputId: string, step = 1) => {
     setSelectedOutputId(outputId);
     setActiveBuilderStep(step);
-    setActiveModule('builder');
+    setActiveModuleState('builder');
   };
 
   const openAssociationForOutput = (outputId: string) => {
     setSelectedOutputId(outputId);
     setPreselectedAssocOutputId(outputId);
-    setActiveModule('associations');
+    setActiveModuleState('associations');
   };
 
   const saveOutputType = (typeItem: OutputType) => {
+    const updatedItem: OutputType = {
+      ...typeItem,
+      updatedAt: getNowDate(),
+    };
     setOutputTypes((prev) => {
-      const exists = prev.some((t) => t.id === typeItem.id);
+      const exists = prev.some((t) => t.id === updatedItem.id);
       if (exists) {
-        return prev.map((t) => (t.id === typeItem.id ? typeItem : t));
+        return prev.map((t) => (t.id === updatedItem.id ? updatedItem : t));
       }
-      return [...prev, typeItem];
+      return [...prev, updatedItem];
     });
-    notify('success', `Tipo de salida "${typeItem.name}" (${typeItem.code}) guardado correctamente.`);
+    notify('success', `Tipo de salida "${updatedItem.name}" (${updatedItem.code}) guardado correctamente.`);
+  };
+
+  const saveDataContract = (contract: DataContract, propagateImpactToOutputId?: string) => {
+    setDataContracts((prev) => {
+      const exists = prev.some((c) => c.id === contract.id);
+      if (exists) {
+        return prev.map((c) => (c.id === contract.id ? contract : c));
+      }
+      return [contract, ...prev];
+    });
+
+    if (propagateImpactToOutputId) {
+      setConfiguredOutputs((prev) =>
+        prev.map((out) => {
+          if (out.id !== propagateImpactToOutputId) return out;
+          if (out.status === 'Publicada' || out.status === 'Aprobada') return out;
+          const impact = analyzeSourceStructureUpdateImpact({
+            fields: out.fields,
+            updatedContract: contract,
+          });
+          if (impact.impactedCount > 0) {
+            notify(
+              'warning',
+              `Estructura "${contract.code}" actualizada a ${contract.version}: ${impact.impactedCount} campo(s) de la salida fueron marcados como "Requiere revisión por cambio en fuente" y ${impact.preservedCount} mapeo(s) válidos se conservaron.`
+            );
+          } else {
+            notify(
+              'success',
+              `Estructura de origen "${contract.name}" (${contract.version}) registrada y sincronizada sin impactos de incompatibilidad.`
+            );
+          }
+          return {
+            ...out,
+            updatedAt: getNowDate(),
+            fields: impact.updatedFields,
+          };
+        })
+      );
+      return;
+    }
+
+    notify(
+      'success',
+      `Estructura de origen "${contract.name}" (${contract.code} · ${contract.fields.length} campos) registrada en el catálogo.`
+    );
+  };
+
+  const saveCatalogSourceFormat = (entry: CatalogSourceFormatEntry) => {
+    setCatalogSourceFormats((prev) => {
+      const exists = prev.some((e) => e.id === entry.id);
+      if (exists) {
+        return prev.map((e) => (e.id === entry.id ? entry : e));
+      }
+      return [entry, ...prev];
+    });
+    notify(
+      'success',
+      `Entrada de catálogo "${entry.reportName}" (${entry.country} · ${entry.regulatorOrOrganism}) guardada en estado "${entry.catalogStatus}".`
+    );
+  };
+
+  const importCatalogEntriesBatch = (
+    entries: CatalogSourceFormatEntry[],
+    mode: 'reconcile' | 'append'
+  ) => {
+    if (entries.length === 0) return;
+    setCatalogSourceFormats((prev) => {
+      if (mode === 'append') {
+        const existingIds = new Set(prev.map((e) => e.id));
+        const newUnique = entries.filter((e) => !existingIds.has(e.id));
+        return [...newUnique, ...prev];
+      }
+      // Reconcile mode: match by id or by (country + regulator + code + reportName), preserving linkedDataContractId on existing entries
+      const updated = [...prev];
+      let addedCount = 0;
+      let updatedCount = 0;
+      for (const inc of entries) {
+        const idx = updated.findIndex(
+          (ex) =>
+            ex.id === inc.id ||
+            (ex.country === inc.country &&
+              ex.regulatorOrOrganism.toLowerCase() === inc.regulatorOrOrganism.toLowerCase() &&
+              ex.formatCode.toLowerCase() === inc.formatCode.toLowerCase() &&
+              (ex.reportName.toLowerCase() === inc.reportName.toLowerCase() ||
+                (inc.formatCode !== '' && ex.formatCode === inc.formatCode)))
+        );
+        if (idx >= 0) {
+          const existing = updated[idx];
+          updated[idx] = {
+            ...inc,
+            id: existing.id,
+            linkedDataContractId: existing.linkedDataContractId || inc.linkedDataContractId,
+            catalogStatus: existing.linkedDataContractId
+              ? existing.catalogStatus
+              : inc.catalogStatus,
+          };
+          updatedCount++;
+        } else {
+          updated.push(inc);
+          addedCount++;
+        }
+      }
+      notify(
+        'success',
+        `Catálogo reconciliado: ${entries.length} fila(s) procesadas (${addedCount} nueva(s), ${updatedCount} actualizada(s) preservando estructuras vinculadas y versiones publicadas).`
+      );
+      return updated;
+    });
+  };
+
+  const registerStructureForCatalogEntry = (catalogId: string, contract: DataContract) => {
+    setDataContracts((prev) => {
+      const exists = prev.some((c) => c.id === contract.id);
+      if (exists) {
+        return prev.map((c) => (c.id === contract.id ? contract : c));
+      }
+      return [contract, ...prev];
+    });
+    setCatalogSourceFormats((prev) =>
+      prev.map((e) =>
+        e.id === catalogId
+          ? {
+              ...e,
+              linkedDataContractId: contract.id,
+              catalogStatus:
+                (contract.executionBatches?.length || 0) > 0 || contract.demoRows.length > 0
+                  ? 'Estructura y datos disponibles'
+                  : 'Estructura disponible',
+            }
+          : e
+      )
+    );
+    notify(
+      'success',
+      `Estructura "${contract.code}" (${contract.fields.length} campos) vinculada al formato de catálogo. Ahora puede seleccionarla para diseñar salidas.`
+    );
+  };
+
+  const addExecutionBatchToContract = (contractId: string, batch: SourceExecutionBatch) => {
+    setDataContracts((prev) =>
+      prev.map((c) => {
+        if (c.id !== contractId) return c;
+        const existingBatches = c.executionBatches || [];
+        return {
+          ...c,
+          snapshotId: batch.executionCode,
+          demoRows: c.demoRows.length === 0 ? batch.rows : c.demoRows,
+          executionBatches: [batch, ...existingBatches],
+        };
+      })
+    );
+    setCatalogSourceFormats((prev) =>
+      prev.map((e) =>
+        e.linkedDataContractId === contractId
+          ? { ...e, catalogStatus: 'Estructura y datos disponibles' }
+          : e
+      )
+    );
+    notify(
+      'success',
+      `Lote de datos "${batch.executionCode}" (${batch.recordCount} registros · Corte ${batch.cutoffPeriod} · ${batch.entityScope}) registrado sin sobrescribir ejecuciones anteriores.`
+    );
   };
 
   const saveConfiguredOutput = (updated: ConfiguredOutput, silent = false) => {
+    const nowDate = getNowDate();
+    // Synchronize Principal packageMember fileNamePattern with composition.fileNamePattern
+    const syncedMembers = updated.composition.packageMembers.map((m) =>
+      m.role === 'Principal'
+        ? {
+            ...m,
+            fileNamePattern: `${updated.composition.fileNamePattern.replace(
+              new RegExp(`\\.${updated.composition.extension}$`, 'i'),
+              ''
+            )}.${updated.composition.extension}`,
+          }
+        : m
+    );
+    const normalized: ConfiguredOutput = {
+      ...updated,
+      updatedAt: nowDate,
+      composition: {
+        ...updated.composition,
+        packageMembers: syncedMembers,
+      },
+    };
+
     setConfiguredOutputs((prev) => {
-      const existing = prev.find((o) => o.id === updated.id);
+      const existing = prev.find((o) => o.id === normalized.id);
       if (existing && (existing.status === 'Publicada' || existing.status === 'Aprobada')) {
         if (!silent) {
           notify(
             'error',
-            `La salida ${existing.code} v${existing.version} está en estado "${existing.status}" y no puede modificarse directamente. Cree una nueva revisión para editar.`
+            `La salida ${existing.code} v${existing.version} está en estado "${existing.status}" y es inmutable. Cree una nueva revisión en borrador para realizar cambios.`
           );
         }
         return prev;
       }
-      const exists = prev.some((o) => o.id === updated.id);
+      const exists = prev.some((o) => o.id === normalized.id);
       if (exists) {
-        return prev.map((o) => (o.id === updated.id ? { ...updated, updatedAt: '2026-11-09' } : o));
+        return prev.map((o) => (o.id === normalized.id ? normalized : o));
       }
-      return [
-        { ...updated, updatedAt: '2026-11-09' },
-        ...prev,
-      ];
+      return [normalized, ...prev];
     });
     if (!silent) {
-      notify('success', `Cambios de la salida "${updated.code}" (v${updated.version}) guardados correctamente.`);
+      notify(
+        'success',
+        `Cambios de la salida "${normalized.code}" (v${normalized.version}) guardados en este navegador (${getNowTimeOnly()}).`
+      );
     }
   };
 
@@ -300,8 +624,9 @@ export const ConfiguratorProvider: React.FC<{ children: React.ReactNode }> = ({ 
     if (!base) return null;
 
     const nextVer = bumpMinorVersion(base.version);
-    const newId = `${base.id}-REV-${nextVer.replace('.', '_')}`;
+    const newId = `${base.id}-REV-${nextVer.replace('.', '_')}-${Date.now().toString(36).slice(-3).toUpperCase()}`;
     const newFingerprint = `sha256:rev_${Date.now().toString(16)}`;
+    const nowDate = getNowDate();
 
     const revision: ConfiguredOutput = {
       ...JSON.parse(JSON.stringify(base)),
@@ -310,14 +635,14 @@ export const ConfiguratorProvider: React.FC<{ children: React.ReactNode }> = ({ 
       status: 'Borrador',
       baseOutputId: base.id,
       derivationType: 'Revisión',
-      updatedAt: '2026-11-05',
+      updatedAt: nowDate,
       fingerprint: newFingerprint,
       versionHistory: [
         ...base.versionHistory,
         {
           version: nextVer,
           status: 'Borrador',
-          createdAt: '2026-11-05',
+          createdAt: getNowDateTime(),
           createdBy: activeUserRole,
           justification: justification || `Nueva revisión derivada de v${base.version}.`,
           changesSummary: [`Revisión en borrador creada a partir de ${base.code} v${base.version}.`],
@@ -332,7 +657,7 @@ export const ConfiguratorProvider: React.FC<{ children: React.ReactNode }> = ({ 
     setSelectedOutputId(revision.id);
     notify(
       'success',
-      `Nueva revisión en Borrador (${revision.code} v${revision.version}) creada. Las asociaciones vigentes conservan v${base.version} hasta su adopción explícita.`
+      `Nueva revisión editable en Borrador (${revision.code} v${revision.version}) creada. Las asociaciones vigentes conservan v${base.version} hasta que decida actualizarlas.`
     );
     return revision;
   };
@@ -347,6 +672,7 @@ export const ConfiguratorProvider: React.FC<{ children: React.ReactNode }> = ({ 
 
     const newId = `OUT-VAR-${Date.now().toString(36).toUpperCase()}`;
     const newFingerprint = `sha256:var_${Date.now().toString(16)}`;
+    const nowDate = getNowDate();
 
     const variant: ConfiguredOutput = {
       ...JSON.parse(JSON.stringify(base)),
@@ -357,13 +683,13 @@ export const ConfiguratorProvider: React.FC<{ children: React.ReactNode }> = ({ 
       status: 'Borrador',
       baseOutputId: base.id,
       derivationType: 'Variante autorizada',
-      updatedAt: '2026-11-05',
+      updatedAt: nowDate,
       fingerprint: newFingerprint,
       versionHistory: [
         {
           version: '1.0',
           status: 'Borrador',
-          createdAt: '2026-11-05',
+          createdAt: getNowDateTime(),
           createdBy: activeUserRole,
           justification: `Variante autorizada derivada de base ${base.code} v${base.version}. Conserva vínculo con bloques compatibles.`,
           changesSummary: [`Derivación controlada desde ${base.code} (${base.version}).`],
@@ -390,6 +716,7 @@ export const ConfiguratorProvider: React.FC<{ children: React.ReactNode }> = ({ 
 
     const newId = `OUT-COPY-${Date.now().toString(36).toUpperCase()}`;
     const newFingerprint = `sha256:copy_${Date.now().toString(16)}`;
+    const nowDate = getNowDate();
 
     const clone: ConfiguredOutput = {
       ...JSON.parse(JSON.stringify(base)),
@@ -400,16 +727,16 @@ export const ConfiguratorProvider: React.FC<{ children: React.ReactNode }> = ({ 
       status: 'Borrador',
       baseOutputId: undefined,
       derivationType: 'Copia independiente',
-      updatedAt: '2026-11-05',
+      updatedAt: nowDate,
       fingerprint: newFingerprint,
       versionHistory: [
         {
           version: '1.0',
           status: 'Borrador',
-          createdAt: '2026-11-05',
+          createdAt: getNowDateTime(),
           createdBy: activeUserRole,
-          justification: `Clonación explícita solicitada por el usuario a partir de ${base.code}.`,
-          changesSummary: [`Nueva identidad independiente originada desde ${base.code}.`],
+          justification: `Duplicación independiente solicitada por el usuario a partir de ${base.code}.`,
+          changesSummary: [`Nueva salida independiente originada desde ${base.code}.`],
           fingerprint: newFingerprint,
           baseVersionRef: base.code,
           derivationKind: 'Clonación',
@@ -419,7 +746,7 @@ export const ConfiguratorProvider: React.FC<{ children: React.ReactNode }> = ({ 
 
     setConfiguredOutputs((prev) => [clone, ...prev]);
     setSelectedOutputId(clone.id);
-    notify('info', `Copia independiente "${newCode}" creada en estado Borrador.`);
+    notify('info', `Salida independiente "${newCode}" (v1.0) creada en estado Borrador.`);
     return clone;
   };
 
@@ -438,7 +765,7 @@ export const ConfiguratorProvider: React.FC<{ children: React.ReactNode }> = ({ 
     ) {
       notify(
         'error',
-        `Bloqueo de gobierno (Ruta R6): No se puede aprobar ni publicar "${target.code}" porque el tipo técnico ${outType.family} está en estado "${outType.supportStatus}".`
+        `Bloqueo de gobierno: No se puede aprobar ni publicar "${target.code}" porque el tipo de archivo ${outType.family} está en estado "${outType.supportStatus}".`
       );
       return false;
     }
@@ -455,11 +782,14 @@ export const ConfiguratorProvider: React.FC<{ children: React.ReactNode }> = ({ 
       if (hasConflict || hasPendingCritical || hasUnmapped) {
         notify(
           'error',
-          `Bloqueo de validación: Resuelva primero los campos obligatorios sin mapeo o las propiedades críticas con evidencia pendiente/en conflicto antes de pasar a "${nextStatus}".`
+          `Bloqueo de validación: Resuelva primero los campos obligatorios sin origen asignado o las propiedades con evidencia en conflicto/pendiente antes de pasar a "${nextStatus}".`
         );
         return false;
       }
     }
+
+    const nowDateTime = getNowDateTime();
+    const nowDate = getNowDate();
 
     setConfiguredOutputs((prev) =>
       prev.map((o) => {
@@ -467,11 +797,11 @@ export const ConfiguratorProvider: React.FC<{ children: React.ReactNode }> = ({ 
         const newEntry = {
           version: o.version,
           status: nextStatus,
-          createdAt: '2026-11-05',
+          createdAt: nowDateTime,
           createdBy: activeUserRole,
           approvedBy:
             nextStatus === 'Aprobada' || nextStatus === 'Publicada'
-              ? 'Comité de Gobierno y Regulación'
+              ? `${activeUserRole} · Comité de Gobierno`
               : undefined,
           justification: justification || `Transición controlada a ${nextStatus}`,
           changesSummary: [`Estado actualizado de ${o.status} a ${nextStatus}.`],
@@ -481,7 +811,7 @@ export const ConfiguratorProvider: React.FC<{ children: React.ReactNode }> = ({ 
         return {
           ...o,
           status: nextStatus,
-          updatedAt: '2026-11-05',
+          updatedAt: nowDate,
           versionHistory: [...o.versionHistory, newEntry],
         };
       })
@@ -489,22 +819,27 @@ export const ConfiguratorProvider: React.FC<{ children: React.ReactNode }> = ({ 
 
     notify(
       'success',
-      `Estado de "${target.code} v${target.version}" actualizado a "${nextStatus}". Las asociaciones existentes no se migran silenciosamente.`
+      `Estado de "${target.code} v${target.version}" actualizado a "${nextStatus}". Las asociaciones existentes conservan su versión hasta que se actualicen explícitamente.`
     );
     return true;
   };
 
   const saveAssociation = (assoc: FormatOutputAssociation) => {
+    const updatedAssoc: FormatOutputAssociation = {
+      ...assoc,
+      updatedAt: getNowDate(),
+      updatedBy: activeUserRole,
+    };
     setAssociations((prev) => {
-      const exists = prev.some((a) => a.id === assoc.id);
+      const exists = prev.some((a) => a.id === updatedAssoc.id);
       if (exists) {
-        return prev.map((a) => (a.id === assoc.id ? assoc : a));
+        return prev.map((a) => (a.id === updatedAssoc.id ? updatedAssoc : a));
       }
-      return [...prev, assoc];
+      return [...prev, updatedAssoc];
     });
     notify(
       'success',
-      `Asociación ${assoc.code} guardada por referencia hacia la salida configurada (v${assoc.configuredOutputVersion}) sin duplicar la definición.`
+      `Asociación ${updatedAssoc.code} guardada en estado "${updatedAssoc.status}" apuntando a la versión v${updatedAssoc.configuredOutputVersion}.`
     );
   };
 
@@ -520,7 +855,7 @@ export const ConfiguratorProvider: React.FC<{ children: React.ReactNode }> = ({ 
           ? {
               ...a,
               configuredOutputVersion: newVersion,
-              updatedAt: '2026-11-05',
+              updatedAt: getNowDate(),
               updatedBy: activeUserRole,
             }
           : a
@@ -528,7 +863,7 @@ export const ConfiguratorProvider: React.FC<{ children: React.ReactNode }> = ({ 
     );
     notify(
       'success',
-      `Asociación actualizada explícitamente a la versión ${newVersion}. Los demás consumidores mantienen su versión previa.`
+      `Asociación actualizada explícitamente a la versión v${newVersion}. Los demás formatos asociados conservan su versión previa.`
     );
   };
 
@@ -536,7 +871,7 @@ export const ConfiguratorProvider: React.FC<{ children: React.ReactNode }> = ({ 
     deploymentId: string,
     action: 'Notificar' | 'Descargar' | 'Instalar' | 'Activar' | 'Revertir'
   ) => {
-    const now = '2026-11-05 16:30';
+    const now = getNowDateTime();
     setEnvironmentDeployments((prev) =>
       prev.map((dep) => {
         if (dep.id !== deploymentId) return dep;
@@ -634,7 +969,7 @@ export const ConfiguratorProvider: React.FC<{ children: React.ReactNode }> = ({ 
         return dep;
       })
     );
-    notify('success', `Evento independiente "${action}" registrado y trazado en el ambiente seleccionado.`);
+    notify('success', `Acción "${action}" ejecutada y registrada en la bitácora del ambiente (${now}).`);
   };
 
   const decideTotaliaSuggestion = (
@@ -644,6 +979,9 @@ export const ConfiguratorProvider: React.FC<{ children: React.ReactNode }> = ({ 
     const sug = totaliaSuggestions.find((s) => s.id === suggestionId);
     if (!sug) return;
 
+    const nowDateTime = getNowDateTime();
+    const nowDate = getNowDate();
+
     setTotaliaSuggestions((prev) =>
       prev.map((s) =>
         s.id === suggestionId
@@ -651,7 +989,7 @@ export const ConfiguratorProvider: React.FC<{ children: React.ReactNode }> = ({ 
               ...s,
               status: decision,
               decidedBy: activeUserRole,
-              decidedAt: '2026-11-05 16:35',
+              decidedAt: nowDateTime,
             }
           : s
       )
@@ -676,14 +1014,14 @@ export const ConfiguratorProvider: React.FC<{ children: React.ReactNode }> = ({ 
             status: 'Borrador',
             baseOutputId: targetOutput.id,
             derivationType: 'Revisión',
-            updatedAt: '2026-11-05',
+            updatedAt: nowDate,
             fields: updatedFields,
             versionHistory: [
               ...targetOutput.versionHistory,
               {
                 version: nextVer,
                 status: 'Borrador',
-                createdAt: '2026-11-05',
+                createdAt: nowDateTime,
                 createdBy: `${activeUserRole} (Asistido por TOTALiA®)`,
                 justification: `Aplicación controlada de sugerencia TOTALiA: ${sug.title}`,
                 changesSummary: [`${sug.elementAffected}: ${sug.currentValue} -> ${sug.proposedValue}`],
@@ -707,6 +1045,7 @@ export const ConfiguratorProvider: React.FC<{ children: React.ReactNode }> = ({ 
               if (o.id !== targetOutput.id) return o;
               return {
                 ...o,
+                updatedAt: nowDate,
                 fields: o.fields.map((f) =>
                   f.technicalName === sug.fieldPatch!.fieldTechnicalName
                     ? { ...f, ...sug.fieldPatch!.updates }
@@ -751,7 +1090,7 @@ export const ConfiguratorProvider: React.FC<{ children: React.ReactNode }> = ({ 
     if (!assoc) {
       notify(
         'error',
-        'No se encontró una asociación activa única para el contexto solicitado. Verifique la matriz de asociaciones.'
+        'No se encontró una asociación activa única para el contexto solicitado. Verifique la pantalla D. Formatos y asociaciones.'
       );
       return null;
     }
@@ -769,24 +1108,37 @@ export const ConfiguratorProvider: React.FC<{ children: React.ReactNode }> = ({ 
     const outType = outputTypes.find((t) => t.id === output.outputTypeId) || outputTypes[0];
     const fmt = regulatoryFormats.find((f) => f.id === params.formatId);
     const daque = daqueProfiles.find((d) => d.id === assoc.daqueProfileId);
-    const baseContract = dataContracts[0];
+    const baseContract =
+      dataContracts.find((c) => c.id === output.dataContractId) || dataContracts[0];
 
-    const customRows = baseContract.demoRows.map((r, idx) => {
-      let copy = { ...r };
-      if (params.injectZeroBalanceError && idx === 1) {
-        copy.saldo = 0;
-      }
-      if (params.injectOverflowError && idx === 0) {
-        copy.nombre = 'Consorcio Financiero Internacional de Supervisión Bancaria Multilateral';
-      }
-      return copy;
-    });
+    const contractForRun: DataContract =
+      params.injectZeroBalanceError || params.injectOverflowError
+        ? {
+            ...baseContract,
+            executionBatches: (baseContract.executionBatches || []).map((b) => ({
+              ...b,
+              rows: b.rows.map((r, idx) => {
+                const copy = { ...r };
+                if (params.injectZeroBalanceError && idx === 1) {
+                  copy.saldo = 0;
+                }
+                if (params.injectOverflowError && idx === 0) {
+                  copy.nombre =
+                    'Consorcio Financiero Internacional de Supervisión Bancaria Multilateral';
+                }
+                return copy;
+              }),
+            })),
+          }
+        : baseContract;
 
     const artifact = generateOutputArtifact({
       output,
       outputType: outType,
-      contract: { ...baseContract, demoRows: customRows },
+      contract: contractForRun,
+      allContracts: dataContracts,
       daqueProfile: daque,
+      entidad: globalEntity,
       context: {
         entidad: globalEntity.replace(/\s+/g, '_'),
         formato: fmt?.code || 'DEMO-01',
@@ -797,14 +1149,12 @@ export const ConfiguratorProvider: React.FC<{ children: React.ReactNode }> = ({ 
 
     const blockingCount = artifact.findings.filter((f) => f.severity === 'Bloqueante').length;
     const warningCount = artifact.findings.filter((f) => f.severity === 'Advertencia').length;
-    const hasDaqueBlock = artifact.findings.some(
-      (f) => f.layer === 'Datos del formato (DAQUE)' && f.severity === 'Bloqueante'
-    );
+    const computedState = artifact.readinessMatrix.deliveryReadinessStatus.state;
 
     const newRun: ExecutionRun = {
       id: `RUN-${Date.now().toString(36).toUpperCase()}`,
       runCode: `DEMO-GEN-00${executionRuns.length + 43}`,
-      createdAt: '2026-11-05 16:40:00',
+      createdAt: getNowDateTime(),
       entityScope: globalEntity,
       environment: params.environment,
       cutoffPeriod: params.cutoffPeriod,
@@ -817,30 +1167,41 @@ export const ConfiguratorProvider: React.FC<{ children: React.ReactNode }> = ({ 
       deliveryChannelId: assoc.deliveryChannelId,
       daqueProfileId: assoc.daqueProfileId,
       snapshotId: baseContract.snapshotId,
+      sourceExecutionBatchId: artifact.sourceExecutionBatchId,
+      sourceExecutionSummary: artifact.sourceExecutionSummary,
       recordsReviewed: artifact.rowsProcessed,
       blockingCount,
       warningCount,
-      generationState: hasDaqueBlock
-        ? 'Bloqueada en precondición DAQUE'
-        : blockingCount > 0
-        ? 'Bloqueada en estructura/archivo'
-        : 'Lista para entrega',
+      generationState: computedState,
       deliveryState: 'Pendiente de envío / descarga',
       generatedFileName: artifact.fileName,
       generatedFileContent: artifact.content,
       generatedMimeType: artifact.mimeType,
       sha256Hash: `sha256:${Date.now().toString(16)}a8f41209c3b1`,
       binaryRuntimeFingerprint: `TÓTAL REPORT® Core v8.4.2 · ${outType.engineHash.slice(0, 22)}`,
+      configFingerprint: output.fingerprint,
+      isPreloadedDemo: false,
       findings: artifact.findings,
     };
 
     setExecutionRuns((prev) => [newRun, ...prev]);
-    notify(
-      blockingCount > 0 ? 'warning' : 'success',
-      blockingCount > 0
-        ? `Ejecución ${newRun.runCode} finalizada con ${blockingCount} bloqueo(s). Revise los hallazgos por capa.`
-        : `Ejecución ${newRun.runCode} completada con 0 bloqueos. Conjunto listo para entrega.`
-    );
+
+    if (blockingCount > 0) {
+      notify(
+        'warning',
+        `Ejecución ${newRun.runCode} finalizada con ${blockingCount} bloqueo(s). Estado: ${computedState}.`
+      );
+    } else if (!outType.canGenerateRealFileInBrowser) {
+      notify(
+        'info',
+        `Ejecución ${newRun.runCode}: Esquema y datos validados sin bloqueos. Nota: La generación de archivo binario ${outType.family} no está disponible en navegador (requiere motor en servidor).`
+      );
+    } else {
+      notify(
+        'success',
+        `Ejecución ${newRun.runCode} completada con 0 bloqueos. Archivo físico ${newRun.generatedFileName} generado y disponible para descarga.`
+      );
+    }
     return newRun;
   };
 
@@ -860,16 +1221,18 @@ export const ConfiguratorProvider: React.FC<{ children: React.ReactNode }> = ({ 
           : r
       )
     );
-    notify('success', `Estado de entrega actualizado a: "${nextDeliveryState}".`);
+    notify('success', `Estado de entrega de la corrida actualizado a: "${nextDeliveryState}".`);
   };
 
   const exportDomainJson = (): string => {
     return JSON.stringify(
       {
-        schemaVersion: 'TOTAL-REPORT-CES-1.2',
+        schemaVersion: 'TOTAL-REPORT-CES-1.5',
         exportedAt: new Date().toISOString(),
         outputTypes,
         configuredOutputs,
+        dataContracts,
+        catalogSourceFormats,
         associations,
         environmentDeployments,
         totaliaSuggestions,
@@ -889,6 +1252,8 @@ export const ConfiguratorProvider: React.FC<{ children: React.ReactNode }> = ({ 
       }
       setOutputTypes(parsed.outputTypes);
       setConfiguredOutputs(parsed.configuredOutputs);
+      if (parsed.dataContracts) setDataContracts(parsed.dataContracts);
+      if (parsed.catalogSourceFormats) setCatalogSourceFormats(parsed.catalogSourceFormats);
       if (parsed.associations) setAssociations(parsed.associations);
       if (parsed.environmentDeployments) setEnvironmentDeployments(parsed.environmentDeployments);
       notify('success', 'Repositorio de configuraciones importado y verificado correctamente.');
@@ -899,10 +1264,26 @@ export const ConfiguratorProvider: React.FC<{ children: React.ReactNode }> = ({ 
     }
   };
 
+  const restoreBackupSnapshot = (): boolean => {
+    try {
+      const backup = localStorage.getItem(BACKUP_STORAGE_KEY);
+      if (!backup) {
+        notify('info', 'No se encontró una instantánea previa de migración en este navegador.');
+        return false;
+      }
+      return importDomainJson(backup);
+    } catch {
+      notify('error', 'No fue posible restaurar la instantánea previa.');
+      return false;
+    }
+  };
+
   const resetDemoData = () => {
     localStorage.removeItem(STORAGE_KEY);
     setOutputTypes(INITIAL_OUTPUT_TYPES);
     setConfiguredOutputs(INITIAL_CONFIGURED_OUTPUTS);
+    setDataContracts(INITIAL_DATA_CONTRACTS);
+    setCatalogSourceFormats(INITIAL_CATALOG_SOURCE_FORMATS);
     setAssociations(INITIAL_ASSOCIATIONS);
     setEnvironmentDeployments(INITIAL_ENVIRONMENT_DEPLOYMENTS);
     setTotaliaSuggestions(INITIAL_TOTALIA_SUGGESTIONS);
@@ -914,7 +1295,7 @@ export const ConfiguratorProvider: React.FC<{ children: React.ReactNode }> = ({ 
   return (
     <ConfiguratorContext.Provider
       value={{
-        activeModule,
+        activeModule: activeModuleState,
         setActiveModule,
         selectedOutputId,
         setSelectedOutputId,
@@ -928,9 +1309,11 @@ export const ConfiguratorProvider: React.FC<{ children: React.ReactNode }> = ({ 
         setGlobalEntity,
         activeUserRole,
         setActiveUserRole,
+        lastSavedAt,
         outputTypes,
         configuredOutputs,
         dataContracts,
+        catalogSourceFormats,
         daqueProfiles,
         regulatoryFormats,
         transmissionTypes,
@@ -944,6 +1327,11 @@ export const ConfiguratorProvider: React.FC<{ children: React.ReactNode }> = ({ 
         notify,
         clearBanner,
         saveOutputType,
+        saveDataContract,
+        saveCatalogSourceFormat,
+        importCatalogEntriesBatch,
+        registerStructureForCatalogEntry,
+        addExecutionBatchToContract,
         openOutputInBuilder,
         openAssociationForOutput,
         preselectedAssocOutputId,
@@ -963,6 +1351,7 @@ export const ConfiguratorProvider: React.FC<{ children: React.ReactNode }> = ({ 
         updateRunDeliveryState,
         exportDomainJson,
         importDomainJson,
+        restoreBackupSnapshot,
         resetDemoData,
       }}
     >

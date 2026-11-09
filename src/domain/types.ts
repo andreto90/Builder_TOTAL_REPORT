@@ -178,11 +178,18 @@ export interface StructureField {
   mapping: {
     transformationKind: TransformationKind;
     sourceContractId: string;
+    sourceAlias?: string;
     sourceField: string;
     expression: string;
     isParameterizedPoint: boolean;
     parameterName?: string;
     emptyTreatment: 'Error bloqueante' | 'Valor predeterminado' | 'Nulo explícito';
+    mappingStatus?:
+      | 'Sin asignar'
+      | 'Propuesta automática (Requiere confirmación)'
+      | 'Confirmado por usuario'
+      | 'Requiere revisión por cambio en fuente';
+    changeImpactNote?: string;
   };
 }
 
@@ -236,6 +243,36 @@ export interface VersionHistoryEntry {
   fingerprint: string;
   baseVersionRef?: string;
   derivationKind: 'Creación inicial' | 'Nueva revisión' | 'Variante autorizada' | 'Clonación';
+  isPreloadedDemo?: boolean;
+}
+
+export type SourceRelationKind =
+  | 'Sin unión (Secciones separadas)'
+  | '1:1 Exacta por clave única'
+  | 'Izquierda (Conservar principal sin coincidencia)'
+  | '1:N Detalle (Advierte multiplicación de filas)'
+  | 'No soportada (Requiere preparación previa en TÓTAL REPORT®)';
+
+export interface AttachedOutputSource {
+  alias: string;
+  label: string;
+  originRoute: 'Formato generado por TÓTAL REPORT®' | 'Fuente proporcionada por el cliente';
+  dataContractId: string;
+  catalogEntryId?: string;
+  sourceCatalogEntryId?: string;
+  selectedExecutionBatchId?: string;
+  targetSection:
+    | 'Todas las secciones'
+    | 'Cabecera'
+    | 'Detalle'
+    | 'Cierre / Totales'
+    | 'Nodo raíz / Hecho';
+  combinationRule?: {
+    joinWithAlias: string;
+    leftKeyField: string;
+    rightKeyField: string;
+    relationType: SourceRelationKind;
+  };
 }
 
 export interface ConfiguredOutput {
@@ -273,6 +310,9 @@ export interface ConfiguredOutput {
   };
   // Etapa 3 & 4: Estructura y Mapeo
   dataContractId: string;
+  sourceCatalogEntryId?: string;
+  selectedSourceExecutionId?: string;
+  attachedSources?: AttachedOutputSource[];
   fields: StructureField[];
   // Etapa 5: Reglas y controles de salida
   validationRules: OutputValidationRule[];
@@ -293,8 +333,85 @@ export interface DataContractField {
   precision?: number;
   scale?: number;
   nullable: boolean;
+  formatMask?: string;
   lineage: string;
   sampleValues: (string | number | null)[];
+  sectionName?: string;
+  propertyOrigin?:
+    | 'Declarada oficialmente'
+    | 'Inferida de muestra (Requiere confirmación)'
+    | 'Datos sintéticos de prueba';
+  formatWarning?: string;
+}
+
+export interface SourceExecutionBatch {
+  id: string;
+  executionCode: string;
+  entityScope: string;
+  cutoffPeriod: string;
+  cutoffDate?: string;
+  createdAt: string;
+  sourceCatalogEntryId?: string;
+  sourceStructureVersion?: string;
+  originKind:
+    | 'Ejecución de informe TÓTAL REPORT®'
+    | 'Carga de lote de fuente cliente'
+    | 'Lote de demostración precargado'
+    | 'Generación sintética explícita de demostración';
+  validationStatus:
+    | 'Validado y conforme'
+    | 'Con advertencias'
+    | 'Con advertencias no bloqueantes'
+    | 'Con bloqueos de calidad';
+  recordCount: number;
+  rows: Record<string, string | number | null>[];
+  loadReport?: {
+    fileName?: string;
+    sheetName?: string;
+    totalRowsRead: number;
+    acceptedRows: number;
+    rejectedRows: number;
+    rejections?: Array<{ rowNumber: number; reason: string }>;
+  };
+}
+
+export interface CatalogSourceFormatEntry {
+  id: string;
+  country: 'Colombia' | 'Perú';
+  regulatorOrOrganism: string;
+  formatCode: string;
+  internalNumberPeru?: string;
+  reportName: string;
+  annexOrFormLabelPeru?: string;
+  periodicity: string;
+  sourceDescriptionColombia?: string;
+  areaColombia?: string;
+  responsibleColombia?: string;
+  suggestedTechnicalFamily?: TechnicalFamily;
+  catalogStatus:
+    | 'Formato registrado; estructura pendiente'
+    | 'Estructura disponible'
+    | 'Estructura y datos disponibles'
+    | 'Con observaciones de catálogo por revisar';
+  catalogAnomalies: string[];
+  linkedDataContractId?: string;
+  originEvidenceNote: string;
+  provenanceKind?:
+    | 'Referencia contrastada de catálogo (Excel / Imagen)'
+    | 'Referencia contrastada (Catálogo suministrado)'
+    | 'Importado desde archivo real en sesión'
+    | 'Importado desde archivo de usuario'
+    | 'Ficha sintética de demostración (No atribuida a adjuntos)'
+    | 'Ficha sintética de demostración';
+  provenanceRef?:
+    | string
+    | {
+        fileName?: string;
+        sheetName?: string;
+        rowNumber?: number;
+        imageReference?: string;
+      };
+  rawOriginalValues?: Record<string, string | undefined>;
 }
 
 export interface DataContract {
@@ -302,12 +419,45 @@ export interface DataContract {
   code: string;
   name: string;
   version: string;
-  sourceSystem: 'TÓTAL REPORT® — Núcleo de Preparación';
+  sourceSystem:
+    | 'TÓTAL REPORT® — Núcleo de Preparación'
+    | 'Fuente Externa Registrada por el Cliente';
+  originRoute?: 'Formato generado por TÓTAL REPORT®' | 'Fuente proporcionada por el cliente';
+  jurisdiction?: 'Colombia' | 'Perú' | 'Multirregulador';
+  regulatorOrReceiver?: string;
+  periodicity?: string;
+  structureAvailability?: 'Estructura disponible' | 'Formato registrado; estructura pendiente';
+  structureEvidenceKind?:
+    | 'Estructura oficial del sistema'
+    | 'Estructura declarada por plantilla/esquema'
+    | 'Estructura inferida de archivo de ejemplo'
+    | 'Datos sintéticos de prueba'
+    | 'Estructura pendiente de definición';
+  availableSections?: string[];
   granularity: string;
   primaryKey: string[];
   snapshotId: string;
   fields: DataContractField[];
   demoRows: Record<string, string | number | null>[];
+  executionBatches?: SourceExecutionBatch[];
+  peruMetadata?: {
+    nroInterno: string;
+    nombreInforme: string;
+    informe: string;
+    periodicidad: string;
+    requiresConfirmation?: boolean;
+  };
+  colombiaMetadata?: {
+    organismo: string;
+    codigoOriginal: string;
+    nombre: string;
+    periodicidadOriginal: string;
+    descripcionFuentes: string;
+    area: string;
+    responsable: string;
+    suggestedFamily?: TechnicalFamily;
+    catalogAnomalies?: string[];
+  };
 }
 
 export interface DaqueFormatProfile {
@@ -475,10 +625,16 @@ export interface ExecutionRun {
   deliveryChannelId: string;
   daqueProfileId: string;
   snapshotId: string;
+  sourceExecutionBatchId?: string;
+  sourceExecutionSummary?: string;
   recordsReviewed: number;
   blockingCount: number;
   warningCount: number;
-  generationState: 'Lista para entrega' | 'Bloqueada en precondición DAQUE' | 'Bloqueada en estructura/archivo';
+  generationState:
+    | 'Lista para entrega'
+    | 'Validación superada (Sin generador binario en esta versión)'
+    | 'Bloqueada en precondición DAQUE'
+    | 'Bloqueada en estructura/archivo';
   deliveryState:
     | 'Pendiente de envío / descarga'
     | 'Descargada manualmente (Sin acreditar envío)'
@@ -493,5 +649,7 @@ export interface ExecutionRun {
   generatedMimeType: string;
   sha256Hash: string;
   binaryRuntimeFingerprint: string;
+  configFingerprint?: string;
+  isPreloadedDemo?: boolean;
   findings: ExecutionFinding[];
 }

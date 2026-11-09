@@ -8,6 +8,8 @@ import {
   Layers,
   Link2,
   Plus,
+  Power,
+  Save,
   Search,
   ShieldAlert,
   Sliders,
@@ -16,6 +18,7 @@ import {
 import { useConfigurator } from '../context/ConfiguratorContext';
 import { resolveFormatAssociation } from '../domain/engine';
 import { FormatOutputAssociation } from '../domain/types';
+import { HelpTooltip } from './HelpTooltip';
 
 export const AssociationsMatrixView: React.FC = () => {
   const {
@@ -43,12 +46,20 @@ export const AssociationsMatrixView: React.FC = () => {
   const [showNewModal, setShowNewModal] = useState<boolean>(false);
   const [deleteTarget, setDeleteTarget] = useState<FormatOutputAssociation | null>(null);
 
-  // Resolution Simulator state
+  // Resolution Simulator state synced with global header selectors
   const [simFormatId, setSimFormatId] = useState<string>('FMT-DEMO-01');
   const [simTransId, setSimTransId] = useState<string>('TX-ORDINARIO');
   const [simModality, setSimModality] = useState<'Inicial' | 'Corrección' | 'Reemplazo'>('Inicial');
   const [simEnv, setSimEnv] = useState<'QA' | 'Producción'>(globalEnvironment);
   const [simPeriod, setSimPeriod] = useState<string>(globalPeriod);
+
+  useEffect(() => {
+    setSimEnv(globalEnvironment);
+  }, [globalEnvironment]);
+
+  useEffect(() => {
+    setSimPeriod(globalPeriod);
+  }, [globalPeriod]);
 
   // New Association Form State
   const [newCode, setNewCode] = useState<string>('ASO-NUEVA-01');
@@ -59,11 +70,18 @@ export const AssociationsMatrixView: React.FC = () => {
     configuredOutputs[0]?.id || 'OUT-CSV-DEMO-A'
   );
   const [newChannelId, setNewChannelId] = useState<string>('CHAN-MANUAL-01');
-  const [newEnv, setNewEnv] = useState<'QA' | 'Producción'>('QA');
+  const [newEnv, setNewEnv] = useState<'QA' | 'Producción'>(globalEnvironment);
+  const [newStatus, setNewStatus] = useState<'Activa' | 'Instalada sin activar' | 'Borrador'>(
+    'Activa'
+  );
   const [newValidFrom, setNewValidFrom] = useState<string>('2026-01-01');
   const [newValidTo, setNewValidTo] = useState<string>('Abierta');
   const [newPrefixOverride, setNewPrefixOverride] = useState<string>('ENTREGA_REG');
   const [newIncludeSummary, setNewIncludeSummary] = useState<boolean>(true);
+
+  // Editable overrides for selected association
+  const [editPrefix, setEditPrefix] = useState<string>('');
+  const [editZeroPolicy, setEditZeroPolicy] = useState<string>('');
 
   // Automatically open association modal when navigated from "Asociar" button on a specific output
   useEffect(() => {
@@ -73,11 +91,12 @@ export const AssociationsMatrixView: React.FC = () => {
         setNewOutputId(targetOut.id);
         setNewCode(`ASO-${targetOut.code}-${Date.now().toString().slice(-3)}`);
         setNewPrefixOverride(targetOut.code);
+        setNewEnv(globalEnvironment);
         setShowNewModal(true);
       }
       setPreselectedAssocOutputId(null);
     }
-  }, [preselectedAssocOutputId, configuredOutputs, setPreselectedAssocOutputId]);
+  }, [preselectedAssocOutputId, configuredOutputs, setPreselectedAssocOutputId, globalEnvironment]);
 
   const filteredAssociations = useMemo(() => {
     return associations.filter((a) => {
@@ -90,6 +109,13 @@ export const AssociationsMatrixView: React.FC = () => {
     () => associations.find((a) => a.id === selectedAssocId) || filteredAssociations[0] || null,
     [associations, selectedAssocId, filteredAssociations]
   );
+
+  useEffect(() => {
+    if (selectedAssoc) {
+      setEditPrefix(selectedAssoc.parameterOverrides.fileNamePrefix || '');
+      setEditZeroPolicy(selectedAssoc.parameterOverrides.zeroBalancePolicyOverride || '');
+    }
+  }, [selectedAssoc]);
 
   // Live compatibility check inside New Association Modal (Scenario 5)
   const modalCompatibilityDiagnostic = useMemo(() => {
@@ -119,10 +145,10 @@ export const AssociationsMatrixView: React.FC = () => {
         a.environment === newEnv
     );
 
-    if (existingDuplicate) {
+    if (existingDuplicate && newStatus === 'Activa') {
       return {
         compatible: true,
-        warning: `Atención: Ya existe una asociación activa (${existingDuplicate.code}) para el formato ${fmt.code}, modalidad ${newModality} en ${newEnv}. Si guarda otra asociación activa para la misma combinación, se detectará solapamiento de vigencias.`,
+        warning: `Atención: Ya existe una asociación activa (${existingDuplicate.code}) para el formato ${fmt.code}, modalidad ${newModality} en ${newEnv}. Si guarda otra asociación como "Activa" para la misma combinación, se detectará solapamiento de vigencias. Puede guardarla como "Instalada sin activar" si desea dejarla preparada sin conflicto.`,
       };
     }
 
@@ -138,6 +164,7 @@ export const AssociationsMatrixView: React.FC = () => {
     associations,
     newModality,
     newEnv,
+    newStatus,
   ]);
 
   // Resolution Simulator result
@@ -183,18 +210,63 @@ export const AssociationsMatrixView: React.FC = () => {
       environment: newEnv,
       validFrom: newValidFrom,
       validTo: newValidTo,
-      status: 'Activa',
+      status: newStatus,
       parameterOverrides: {
         fileNamePrefix: newPrefixOverride,
         includeSummaryFile: newIncludeSummary,
       },
-      updatedAt: '2026-11-09',
+      updatedAt: new Date().toISOString().slice(0, 10),
       updatedBy: activeUserRole,
     };
 
     saveAssociation(created);
     setSelectedAssocId(created.id);
     setShowNewModal(false);
+  };
+
+  const handleToggleAssociationStatus = (assoc: FormatOutputAssociation) => {
+    const nextStatus: FormatOutputAssociation['status'] =
+      assoc.status === 'Activa' ? 'Instalada sin activar' : 'Activa';
+
+    if (nextStatus === 'Activa') {
+      const conflicting = associations.find(
+        (a) =>
+          a.id !== assoc.id &&
+          a.status === 'Activa' &&
+          a.formatId === assoc.formatId &&
+          a.transmissionTypeId === assoc.transmissionTypeId &&
+          a.modality === assoc.modality &&
+          a.environment === assoc.environment
+      );
+      if (conflicting) {
+        notify(
+          'warning',
+          `Se activó ${assoc.code}, pero existe otra asociación activa (${conflicting.code}) para el mismo formato, modalidad y ambiente. Verifique el comprobador de vigencias.`
+        );
+      }
+    }
+
+    saveAssociation({
+      ...assoc,
+      status: nextStatus,
+      updatedAt: new Date().toISOString().slice(0, 10),
+      updatedBy: activeUserRole,
+    });
+  };
+
+  const handleSaveSelectedOverrides = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedAssoc) return;
+    saveAssociation({
+      ...selectedAssoc,
+      parameterOverrides: {
+        ...selectedAssoc.parameterOverrides,
+        fileNamePrefix: editPrefix.trim() || undefined,
+        zeroBalancePolicyOverride: editZeroPolicy.trim() || undefined,
+      },
+      updatedAt: new Date().toISOString().slice(0, 10),
+      updatedBy: activeUserRole,
+    });
   };
 
   const handleSimulateOverlapConflict = () => {
@@ -216,7 +288,7 @@ export const AssociationsMatrixView: React.FC = () => {
       parameterOverrides: {
         fileNamePrefix: 'SOLAPADO',
       },
-      updatedAt: '2026-11-09',
+      updatedAt: new Date().toISOString().slice(0, 10),
       updatedBy: activeUserRole,
     };
     saveAssociation(duplicateOverlap);
@@ -235,8 +307,14 @@ export const AssociationsMatrixView: React.FC = () => {
             <Link2 className="w-4 h-4" />
             <span>D. Formatos y asociaciones · Reutilización de Salidas</span>
           </div>
-          <h1 className="text-xl font-bold text-slate-900 mt-0.5">
-            Formatos Regulatorios y Asociación de Salidas
+          <h1 className="text-xl font-bold text-slate-900 mt-0.5 flex items-center gap-2">
+            <span>Formatos Regulatorios y Asociación de Salidas</span>
+            <HelpTooltip
+              title="¿Qué es una asociación por referencia?"
+              description="Vincula una versión específica de una salida configurada con un formato regulatorio, tipo de transmisión, modalidad, canal de entrega y ambiente."
+              example="La salida DEMO-CE-01 (CSV) se reutiliza en los formatos DEMO-01 y DEMO-02 aplicando prefijos y perfiles DAQUE distintos sin duplicar la estructura de campos."
+              consequence="Permite mantener una única definición técnica reutilizable para múltiples reportes regulatorios."
+            />
           </h1>
           <p className="text-xs text-slate-600 mt-1 max-w-3xl">
             Asocie una misma salida configurada con uno o varios formatos regulatorios, versiones, tipos de transmisión y canales de entrega sin duplicar su estructura.
@@ -261,10 +339,15 @@ export const AssociationsMatrixView: React.FC = () => {
           <div>
             <h2 className="text-sm font-bold text-slate-900 flex items-center gap-2">
               <Search className="w-4 h-4 text-[#1E4E8C]" />
-              Comprobador de compatibilidad y vigencia de asociaciones
+              <span>Comprobador de compatibilidad y vigencia de asociaciones</span>
+              <HelpTooltip
+                title="Regla de coincidencia única en ejecución"
+                description="Para ejecutar o transmitir un reporte, el motor busca exactamente una (1) asociación en estado 'Activa' que coincida con el Formato, Tipo de transmisión, Modalidad, Ambiente y Periodo de corte."
+                consequence="Si existen 0 asociaciones activas o más de 1 asociación activa solapada para la misma combinación, la generación se bloquea preventivamente."
+              />
             </h2>
             <p className="text-xs text-slate-600">
-              Verifique qué salida configurada, versión y canal se utilizan para cada formato y tipo de transmisión.
+              Verifique qué salida configurada, versión y canal se utilizan para cada formato y tipo de transmisión. Sincronizado con el periodo (<span className="font-mono font-semibold">{globalPeriod}</span>) y ambiente (<span className="font-semibold">{globalEnvironment}</span>) del encabezado.
             </p>
           </div>
           <div className="flex items-center gap-2">
@@ -272,10 +355,13 @@ export const AssociationsMatrixView: React.FC = () => {
               type="button"
               onClick={handleSimulateOverlapConflict}
               className="px-2.5 py-1.5 rounded border border-amber-300 bg-amber-50 text-amber-900 hover:bg-amber-100 text-xs font-medium transition-colors cursor-pointer"
-              title="Simula dos asociaciones activas para el mismo formato para verificar la detección de conflictos"
             >
               Simular conflicto de vigencias
             </button>
+            <HelpTooltip
+              title="Prueba de detección de conflicto"
+              description="Inserta temporalmente una segunda asociación activa para la misma llave regulatoria con el fin de demostrar cómo el configurador bloquea la ambigüedad y permite eliminar el duplicado."
+            />
           </div>
         </div>
 
@@ -414,7 +500,7 @@ export const AssociationsMatrixView: React.FC = () => {
                 Asociaciones configuradas ({filteredAssociations.length})
               </h2>
               <p className="text-[11px] text-slate-500">
-                Seleccione una fila para consultar los detalles de formato, salida reutilizada y canal.
+                Seleccione una fila para consultar los detalles, activar/desactivar o ajustar parámetros propios del formato.
               </p>
             </div>
 
@@ -494,7 +580,9 @@ export const AssociationsMatrixView: React.FC = () => {
                           className={`inline-block mt-0.5 text-[10px] font-semibold px-1.5 py-0.5 rounded ${
                             assoc.status === 'Activa'
                               ? 'bg-emerald-100 text-emerald-900'
-                              : 'bg-amber-100 text-amber-900'
+                              : assoc.status === 'Instalada sin activar'
+                              ? 'bg-amber-100 text-amber-900'
+                              : 'bg-slate-200 text-slate-800'
                           }`}
                         >
                           {assoc.status}
@@ -506,10 +594,30 @@ export const AssociationsMatrixView: React.FC = () => {
                             type="button"
                             onClick={(e) => {
                               e.stopPropagation();
+                              handleToggleAssociationStatus(assoc);
+                            }}
+                            aria-label={
+                              assoc.status === 'Activa'
+                                ? `Desactivar asociación ${assoc.code}`
+                                : `Activar asociación ${assoc.code}`
+                            }
+                            className={`px-2 py-1 rounded text-[11px] font-semibold border cursor-pointer inline-flex items-center gap-1 ${
+                              assoc.status === 'Activa'
+                                ? 'border-amber-300 bg-amber-50 text-amber-900 hover:bg-amber-100'
+                                : 'border-emerald-300 bg-emerald-50 text-emerald-900 hover:bg-emerald-100'
+                            }`}
+                          >
+                            <Power className="w-3 h-3" />
+                            {assoc.status === 'Activa' ? 'Desactivar' : 'Activar'}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
                               openOutputInBuilder(assoc.configuredOutputId, 1);
                             }}
+                            aria-label={`Ver salida ${out?.code || assoc.configuredOutputId} en el Diseñador`}
                             className="p-1 text-slate-600 hover:text-[#1E4E8C] rounded hover:bg-slate-100 cursor-pointer"
-                            title="Ver salida en el Diseñador"
                           >
                             <ExternalLink className="w-3.5 h-3.5" />
                           </button>
@@ -520,8 +628,8 @@ export const AssociationsMatrixView: React.FC = () => {
                                 e.stopPropagation();
                                 setDeleteTarget(assoc);
                               }}
+                              aria-label={`Eliminar asociación ${assoc.code}`}
                               className="p-1 text-slate-500 hover:text-rose-700 rounded hover:bg-rose-50 cursor-pointer"
-                              title="Eliminar asociación"
                             >
                               <Trash2 className="w-3.5 h-3.5" />
                             </button>
@@ -566,9 +674,20 @@ export const AssociationsMatrixView: React.FC = () => {
                           {selectedAssoc.validTo}
                         </h3>
                       </div>
-                      <span className="px-2 py-0.5 text-[11px] font-semibold rounded bg-slate-100 text-slate-800">
-                        {selectedAssoc.environment}
-                      </span>
+                      <div className="flex items-center gap-1.5">
+                        <span
+                          className={`px-2 py-0.5 text-[11px] font-semibold rounded ${
+                            selectedAssoc.status === 'Activa'
+                              ? 'bg-emerald-100 text-emerald-900'
+                              : 'bg-amber-100 text-amber-900'
+                          }`}
+                        >
+                          {selectedAssoc.status}
+                        </span>
+                        <span className="px-2 py-0.5 text-[11px] font-semibold rounded bg-slate-100 text-slate-800">
+                          {selectedAssoc.environment}
+                        </span>
+                      </div>
                     </div>
 
                     <div className="space-y-2.5 text-xs">
@@ -596,8 +715,12 @@ export const AssociationsMatrixView: React.FC = () => {
 
                       <div className="p-2.5 rounded border border-blue-200 bg-blue-50/50">
                         <div className="flex items-center justify-between">
-                          <span className="text-[10px] font-bold uppercase text-[#1E4E8C]">
-                            2. Salida Configurada Asociada (Por Referencia)
+                          <span className="text-[10px] font-bold uppercase text-[#1E4E8C] flex items-center gap-1">
+                            <span>2. Salida Configurada Asociada (Por Referencia)</span>
+                            <HelpTooltip
+                              title="Asociación por referencia"
+                              description="La asociación apunta al identificador y versión de la salida configurada sin copiar sus campos. Si se crea una nueva revisión de la salida, cada formato decide cuándo adoptarla en el módulo E."
+                            />
                           </span>
                           <span className="font-mono text-[11px] font-bold text-[#1E4E8C] tabular-nums">
                             v{selectedAssoc.configuredOutputVersion}
@@ -649,32 +772,57 @@ export const AssociationsMatrixView: React.FC = () => {
                     </div>
                   </div>
 
-                  {/* Parameterization Overrides per Association */}
-                  <div className="bg-white border border-slate-200 rounded-md p-4">
-                    <h3 className="text-xs font-bold uppercase tracking-wider text-slate-700 flex items-center gap-1.5 mb-2.5">
-                      <Sliders className="w-3.5 h-3.5 text-[#1E4E8C]" />
-                      Parámetros propios de esta asociación
-                    </h3>
+                  {/* Interactive Parameterization Overrides per Association */}
+                  <form
+                    onSubmit={handleSaveSelectedOverrides}
+                    className="bg-white border border-slate-200 rounded-md p-4 space-y-3"
+                  >
+                    <div className="flex items-center justify-between">
+                      <h3 className="text-xs font-bold uppercase tracking-wider text-slate-700 flex items-center gap-1.5">
+                        <Sliders className="w-3.5 h-3.5 text-[#1E4E8C]" />
+                        <span>Parámetros propios de esta asociación (Sobrescrituras)</span>
+                        <HelpTooltip
+                          title="Parámetros propios por asociación"
+                          description="Permiten personalizar el prefijo del archivo o la política de saldos en cero para este formato específico sin tener que clonar ni modificar la salida base."
+                        />
+                      </h3>
+                      <button
+                        type="submit"
+                        className="inline-flex items-center gap-1 px-2.5 py-1 rounded bg-[#1E4E8C] text-white text-[11px] font-semibold hover:bg-[#163A69] cursor-pointer"
+                      >
+                        <Save className="w-3 h-3" />
+                        Guardar parámetros
+                      </button>
+                    </div>
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 text-xs">
-                      <div className="p-2 border border-slate-200 rounded bg-slate-50">
-                        <div className="text-[10px] text-slate-500 uppercase font-semibold">
+                      <div>
+                        <label className="block text-[10px] text-slate-600 uppercase font-semibold mb-1">
                           Prefijo del archivo para este formato
-                        </div>
-                        <div className="font-mono font-semibold text-slate-900 mt-0.5">
-                          {selectedAssoc.parameterOverrides.fileNamePrefix || 'Por defecto'}
-                        </div>
+                        </label>
+                        <input
+                          type="text"
+                          aria-label="Prefijo del archivo de la asociación seleccionada"
+                          value={editPrefix}
+                          onChange={(e) => setEditPrefix(e.target.value)}
+                          placeholder="Por defecto de la salida"
+                          className="w-full border border-slate-300 rounded px-2.5 py-1.5 font-mono text-xs bg-white text-slate-900"
+                        />
                       </div>
-                      <div className="p-2 border border-slate-200 rounded bg-slate-50">
-                        <div className="text-[10px] text-slate-500 uppercase font-semibold">
-                          Regla específica del formato
-                        </div>
-                        <div className="text-slate-800 mt-0.5">
-                          {selectedAssoc.parameterOverrides.zeroBalancePolicyOverride ||
-                            'Según perfil DAQUE del formato'}
-                        </div>
+                      <div>
+                        <label className="block text-[10px] text-slate-600 uppercase font-semibold mb-1">
+                          Nota / Regla específica del formato
+                        </label>
+                        <input
+                          type="text"
+                          aria-label="Regla específica de la asociación seleccionada"
+                          value={editZeroPolicy}
+                          onChange={(e) => setEditZeroPolicy(e.target.value)}
+                          placeholder="Según perfil DAQUE del formato"
+                          className="w-full border border-slate-300 rounded px-2.5 py-1.5 text-xs bg-white text-slate-900"
+                        />
                       </div>
                     </div>
-                  </div>
+                  </form>
                 </>
               );
             })()
@@ -707,7 +855,7 @@ export const AssociationsMatrixView: React.FC = () => {
             </div>
 
             <form onSubmit={handleCreateAssociation} className="p-4 space-y-3 text-xs">
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                 <div>
                   <label className="block font-semibold text-slate-700 mb-1">
                     Código de la asociación *
@@ -733,7 +881,27 @@ export const AssociationsMatrixView: React.FC = () => {
                   </select>
                 </div>
 
-                <div className="sm:col-span-2">
+                <div>
+                  <label className="block font-semibold text-slate-700 mb-1">
+                    Estado inicial *
+                  </label>
+                  <select
+                    aria-label="Estado inicial de la asociación"
+                    value={newStatus}
+                    onChange={(e) =>
+                      setNewStatus(
+                        e.target.value as 'Activa' | 'Instalada sin activar' | 'Borrador'
+                      )
+                    }
+                    className="w-full border border-slate-300 rounded px-2.5 py-1.5 bg-white"
+                  >
+                    <option value="Activa">Activa</option>
+                    <option value="Instalada sin activar">Instalada sin activar</option>
+                    <option value="Borrador">Borrador</option>
+                  </select>
+                </div>
+
+                <div className="sm:col-span-3">
                   <label className="block font-semibold text-slate-700 mb-1">
                     1. Formato regulatorio *
                   </label>
@@ -751,7 +919,7 @@ export const AssociationsMatrixView: React.FC = () => {
                   </select>
                 </div>
 
-                <div className="sm:col-span-2">
+                <div className="sm:col-span-3">
                   <label className="block font-semibold text-slate-700 mb-1">
                     2. Salida configurada que se reutilizará *
                   </label>
@@ -772,7 +940,7 @@ export const AssociationsMatrixView: React.FC = () => {
                   </select>
                 </div>
 
-                <div>
+                <div className="sm:col-span-2">
                   <label className="block font-semibold text-slate-700 mb-1">
                     3. Tipo de transmisión *
                   </label>
@@ -805,7 +973,7 @@ export const AssociationsMatrixView: React.FC = () => {
                   </select>
                 </div>
 
-                <div className="sm:col-span-2">
+                <div className="sm:col-span-3">
                   <label className="block font-semibold text-slate-700 mb-1">
                     4. Canal de entrega *
                   </label>
@@ -834,7 +1002,7 @@ export const AssociationsMatrixView: React.FC = () => {
                   />
                 </div>
 
-                <div>
+                <div className="sm:col-span-2">
                   <label className="block font-semibold text-slate-700 mb-1">
                     Prefijo de archivo para este formato
                   </label>

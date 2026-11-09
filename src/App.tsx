@@ -31,6 +31,8 @@ import { AssociationsMatrixView } from './components/AssociationsMatrixView';
 import { VersionGovernanceView } from './components/VersionGovernanceView';
 import { TotaliaAssistantView } from './components/TotaliaAssistantView';
 import { ExecutionSimulatorView } from './components/ExecutionSimulatorView';
+import { HelpTooltip } from './components/HelpTooltip';
+import { getCutoffDateForPeriod } from './domain/engine';
 
 const NAV_ITEMS: {
   id: ActiveModuleView;
@@ -50,7 +52,7 @@ const NAV_ITEMS: {
     id: 'output-types',
     stepNumber: 'B',
     label: 'Tipos de salida',
-    shortDesc: 'CSV, TXT, XML, AVRO, XBRL, PDF',
+    shortDesc: 'CSV, TXT, XML, AVRO, XBRL, PDF, XLSX',
     icon: Database,
   },
   {
@@ -95,6 +97,7 @@ const EnterpriseWorkspaceShell: React.FC = () => {
     setGlobalEntity,
     activeUserRole,
     setActiveUserRole,
+    lastSavedAt,
     bannerMessage,
     clearBanner,
     totaliaSuggestions,
@@ -134,7 +137,7 @@ const EnterpriseWorkspaceShell: React.FC = () => {
 
         {/* Operational Context Bar */}
         <div className="flex flex-wrap items-center gap-2 text-xs">
-          <div className="flex items-center gap-1.5 bg-[#172B4D] border border-slate-700 rounded px-2.5 py-1">
+          <div className="flex items-center gap-1 bg-[#172B4D] border border-slate-700 rounded px-2.5 py-1">
             <span className="text-[11px] text-slate-300">Periodo:</span>
             <select
               aria-label="Seleccionar Periodo Global"
@@ -142,19 +145,47 @@ const EnterpriseWorkspaceShell: React.FC = () => {
               onChange={(e) => setGlobalPeriod(e.target.value)}
               className="bg-transparent font-mono font-semibold text-white text-xs focus:outline-none cursor-pointer"
             >
-              <option value="2026-10" className="text-slate-900">
-                2026-10
-              </option>
-              <option value="2026-11" className="text-slate-900">
-                2026-11
-              </option>
-              <option value="2026-12" className="text-slate-900">
-                2026-12
-              </option>
+              <optgroup label="Mensual" className="text-slate-900 font-sans">
+                <option value="2026-10" className="text-slate-900">
+                  2026-10 (Mensual · Corte 2026-10-31)
+                </option>
+                <option value="2026-11" className="text-slate-900">
+                  2026-11 (Mensual · Corte 2026-11-30)
+                </option>
+                <option value="2026-12" className="text-slate-900">
+                  2026-12 (Mensual · Corte 2026-12-31)
+                </option>
+              </optgroup>
+              <optgroup label="Semanal / Bimestral / Trimestral / Semestral / Anual" className="text-slate-900 font-sans">
+                <option value="2026-W48" className="text-slate-900">
+                  2026-W48 (Semanal · Corte 2026-11-29)
+                </option>
+                <option value="2026-B6" className="text-slate-900">
+                  2026-B6 (Bimestral Nov-Dic · Corte 2026-12-31)
+                </option>
+                <option value="2026-Q3" className="text-slate-900">
+                  2026-Q3 (Trimestral Jul-Sep · Corte 2026-09-30)
+                </option>
+                <option value="2026-Q4" className="text-slate-900">
+                  2026-Q4 (Trimestral Oct-Dic · Corte 2026-12-31)
+                </option>
+                <option value="2026-S2" className="text-slate-900">
+                  2026-S2 (Semestral Jul-Dic · Corte 2026-12-31)
+                </option>
+                <option value="2026" className="text-slate-900">
+                  2026 (Anual · Corte 2026-12-31)
+                </option>
+              </optgroup>
             </select>
+            <HelpTooltip
+              align="right"
+              title="Periodo solicitado de evaluación y generación"
+              description={`Define el periodo solicitado (${globalPeriod}, corte ${getCutoffDateForPeriod(globalPeriod)}) para resolver marcadores dinámicos ({periodo}) y verificar que el lote de origen seleccionado pertenezca exactamente a este periodo y entidad.`}
+              consequence="Cambiar este selector NUNCA altera ni reescribe las fechas de corte ni los saldos de un lote existente. Si no existe un lote compatible para la entidad y el periodo seleccionados, se bloquea la conformidad de datos y la generación operativa hasta seleccionar o cargar un lote compatible."
+            />
           </div>
 
-          <div className="flex items-center gap-1.5 bg-[#172B4D] border border-slate-700 rounded px-2.5 py-1">
+          <div className="flex items-center gap-1 bg-[#172B4D] border border-slate-700 rounded px-2.5 py-1">
             <span className="text-[11px] text-slate-300">Ambiente:</span>
             <select
               aria-label="Seleccionar Ambiente Global"
@@ -163,15 +194,21 @@ const EnterpriseWorkspaceShell: React.FC = () => {
               className="bg-transparent font-semibold text-white text-xs focus:outline-none cursor-pointer"
             >
               <option value="QA" className="text-slate-900">
-                QA
+                QA (Pruebas)
               </option>
               <option value="Producción" className="text-slate-900">
                 Producción
               </option>
             </select>
+            <HelpTooltip
+              align="right"
+              title="Ambiente operativo"
+              description="Filtra y resuelve las asociaciones activas según el ambiente (QA o Producción) en las pantallas D (Formatos y asociaciones) y F (Pruebas y generación)."
+              consequence="Una asociación activa en QA no se ejecuta en Producción a menos que exista una asociación activa para Producción."
+            />
           </div>
 
-          <div className="flex items-center gap-1.5 bg-[#172B4D] border border-slate-700 rounded px-2.5 py-1">
+          <div className="flex items-center gap-1 bg-[#172B4D] border border-slate-700 rounded px-2.5 py-1">
             <span className="text-[11px] text-slate-300">Entidad:</span>
             <select
               aria-label="Seleccionar Entidad Global"
@@ -189,9 +226,15 @@ const EnterpriseWorkspaceShell: React.FC = () => {
                 Financiera Regulada PE
               </option>
             </select>
+            <HelpTooltip
+              align="right"
+              title="Entidad reportante"
+              description="Identifica la entidad vigilada que genera el reporte. Reemplaza el marcador {entidad} en los nombres de archivo, cabeceras TXT/XML y contextos XBRL."
+              example={`Con "${globalEntity}", el marcador {entidad} se resuelve como "${globalEntity.replace(/\s+/g, '_')}".`}
+            />
           </div>
 
-          <div className="flex items-center gap-1.5 bg-[#1E4E8C] border border-blue-400/30 rounded px-2.5 py-1">
+          <div className="flex items-center gap-1 bg-[#1E4E8C] border border-blue-400/30 rounded px-2.5 py-1">
             <ShieldCheck className="w-3.5 h-3.5 text-blue-200 shrink-0" />
             <span className="text-[11px] text-blue-100">Perfil:</span>
             <select
@@ -216,6 +259,11 @@ const EnterpriseWorkspaceShell: React.FC = () => {
                 Operador de reporte
               </option>
             </select>
+            <HelpTooltip
+              align="right"
+              title="Perfil y atribuciones del usuario"
+              description="Registra el responsable en la bitácora de auditoría y controla qué acciones de gobierno están habilitadas (por ejemplo: Aprobar y Publicar requieren perfil de Aprobador/Gobierno o Implementador; Instalar/Activar en ambiente corresponden al Administrador de ambiente)."
+            />
           </div>
         </div>
       </header>
@@ -258,7 +306,10 @@ const EnterpriseWorkspaceShell: React.FC = () => {
                           {item.stepNumber}. {item.label}
                         </span>
                         {badgeVal && (
-                          <span className="px-1.5 py-0.5 rounded text-[10px] font-mono font-bold bg-amber-400 text-slate-950 tabular-nums shrink-0">
+                          <span
+                            title="Elementos pendientes de revisión o sugerencias TOTALiA®"
+                            className="px-1.5 py-0.5 rounded text-[10px] font-mono font-bold bg-amber-400 text-slate-950 tabular-nums shrink-0"
+                          >
                             {badgeVal}
                           </span>
                         )}
@@ -279,21 +330,21 @@ const EnterpriseWorkspaceShell: React.FC = () => {
             {/* Quick User Workflow Guide */}
             <div className="mt-5 p-3 rounded bg-[#0F1F38] border border-slate-700/80 text-[11px] space-y-1.5">
               <div className="font-bold text-blue-200 uppercase text-[10px] tracking-wider">
-                ¿Cómo configurar una salida?
+                Flujo de trabajo recomendado
               </div>
               <ol className="space-y-1.5 text-slate-300 text-[11px] list-decimal list-inside">
                 <li>
-                  En <strong className="text-white">Salidas configuradas</strong>, pulse{' '}
-                  <span className="text-blue-200 font-semibold">Crear nueva salida</span>.
+                  En <strong className="text-white">A. Salidas configuradas</strong>, pulse{' '}
+                  <span className="text-blue-200 font-semibold">Crear nueva salida</span> o seleccione una existente.
                 </li>
                 <li>
-                  Use el <strong className="text-white">Diseñador de salidas</strong> (7 pasos) para definir campos, origen de datos y pruebas.
+                  En <strong className="text-white">C. Diseñador de salidas</strong> (7 pasos), defina estructura, origen de datos, validaciones y entrega.
                 </li>
                 <li>
-                  En <strong className="text-white">Formatos y asociaciones</strong>, vincule la salida a uno o varios reportes sin duplicarla.
+                  En <strong className="text-white">D. Formatos y asociaciones</strong>, vincule la versión publicada a uno o varios reportes sin duplicarla.
                 </li>
                 <li>
-                  En <strong className="text-white">Pruebas y generación</strong>, valide y descargue el archivo generado.
+                  En <strong className="text-white">F. Pruebas y generación</strong>, ejecute la validación completa y descargue el archivo cuando aplique.
                 </li>
               </ol>
             </div>
@@ -301,12 +352,19 @@ const EnterpriseWorkspaceShell: React.FC = () => {
 
           {/* Sidebar Footer */}
           <div className="p-3 border-t border-slate-800 bg-[#0C182B] text-[11px]">
-            <div className="flex items-center gap-2 font-semibold text-white">
-              <FileSpreadsheet className="w-4 h-4 text-blue-400 shrink-0" />
-              <span>Plataforma TÓTAL REPORT®</span>
+            <div className="flex items-center justify-between gap-1">
+              <div className="flex items-center gap-2 font-semibold text-white">
+                <FileSpreadsheet className="w-4 h-4 text-blue-400 shrink-0" />
+                <span>TÓTAL REPORT®</span>
+              </div>
+              <HelpTooltip
+                align="left"
+                title="Persistencia local en navegador"
+                description="Todos los cambios realizados en salidas, revisiones, asociaciones y corridas se guardan automáticamente en el almacenamiento local del navegador (localStorage). Desde la pantalla A puede exportar un respaldo JSON o restaurar los datos iniciales de demostración."
+              />
             </div>
-            <div className="text-[10px] text-slate-400 mt-1">
-              Guardado automático activo en navegador
+            <div className="text-[10px] text-emerald-300 font-mono mt-1">
+              Guardado en navegador: {lastSavedAt}
             </div>
           </div>
         </aside>
