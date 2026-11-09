@@ -1,0 +1,6 @@
+{
+  "name": "TÓTAL REPORT® — Configurador de Salidas Regulatorias",
+  "description": "Plataforma empresarial para configurar, versionar, reutilizar, validar y simular tipos de salida, contratos de entrega y asociaciones regulatorias en TÓTAL REPORT® y TÓTAL SÚPERVISION® con acompañamiento de TOTALiA®.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
