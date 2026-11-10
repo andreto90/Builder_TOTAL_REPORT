@@ -36,7 +36,7 @@ import {
   INITIAL_OUTPUT_TYPES,
   INITIAL_REGULATORY_FORMATS,
 } from './seedData';
-import { StructureField } from './types';
+import { ConfiguredOutput, DataContract, DataContractField, StructureField } from './types';
 
 test('CSV generation reproduces exact PDF reference row: 31-10-2026;000123;Ana Pérez;1234,50 when 2026-10 batch is selected', () => {
   const csvOutput = {
@@ -726,5 +726,379 @@ test('Structure-only source without data batch for the period is distinguished f
   assert.equal(resolved.hasDataBatch, false);
   assert.equal(resolved.rows.length, 0);
 });
+
+test('Customer source end-to-end: parsing raw data, structure recognition, leading zeros preservation, field mapping and physical CSV artifact generation', () => {
+  const rawCustomerCSV = [
+    'fecha_corte;id_credito;nit_cliente;saldo_capital;tipo_moneda',
+    '2026-11-30;000123;900123456;12500000.50;COP',
+    '2026-11-30;000124;800987654;450000.00;COP',
+  ].join('\n');
+
+  // 1. Structure inference and file parsing
+  const inferred = inferSourceStructureFromSampleText({ rawText: rawCustomerCSV });
+  assert.equal(inferred.inferredFields.length, 5);
+  assert.equal(inferred.inferredFields.some((f) => f.name === 'id_credito'), true);
+
+  // 2. Parse batch and ensure leading zeros are preserved as exact strings
+  const matrix = parseDelimitedMatrix(rawCustomerCSV, ';');
+  const batchResult = parseAndValidateDataBatchMatrix(
+    matrix,
+    0,
+    inferred.inferredFields,
+    '2026-11-30'
+  );
+
+  assert.equal(batchResult.acceptedRows.length, 2);
+  assert.equal(batchResult.rejectedRows.length, 0);
+  assert.equal(batchResult.acceptedRows[0]['id_credito'], '000123'); // zero preserved!
+  assert.equal(batchResult.acceptedRows[1]['id_credito'], '000124');
+
+  // 3. Assemble customer DataContract with execution batch
+  const customerContract = {
+    id: 'DC-CLIENTE-TEST-01',
+    code: 'FUENTE-CLIENTE-CARTERA',
+    name: 'Extracción Core Cartera Cliente',
+    sourceSystem: 'Fuente Externa Registrada por el Cliente' as const,
+    originRoute: 'Fuente proporcionada por el cliente' as const,
+    version: 'v1.0',
+    status: 'Activo' as const,
+    granularity: 'Por obligación',
+    primaryKey: ['id_credito'],
+    snapshotId: 'SNAP-CLI-TEST',
+    demoRows: batchResult.acceptedRows,
+    fields: inferred.inferredFields,
+    executionBatches: [
+      {
+        id: 'BATCH-CLI-2026-11',
+        contractId: 'DC-CLIENTE-TEST-01',
+        executionCode: 'EXEC-CLI-202611-01',
+        cutoffPeriod: '2026-11',
+        cutoffDate: '2026-11-30',
+        entityScope: 'Cooperativa Financiera de Antioquia',
+        rows: batchResult.acceptedRows,
+        recordCount: batchResult.acceptedRows.length,
+        originKind: 'Carga de lote de fuente cliente' as const,
+        createdAt: '2026-11-30T10:00:00Z',
+        validationStatus: 'Validado y conforme' as const,
+        provenanceNote: 'Carga real desde archivo CSV de cliente',
+      },
+    ],
+  };
+
+  // 4. Map output fields to customer source columns
+  const outputType = INITIAL_OUTPUT_TYPES.find((t) => t.id === 'TYPE-CSV-01')!;
+  const testOutput: ConfiguredOutput = {
+    ...INITIAL_CONFIGURED_OUTPUTS[0],
+    id: 'OUT-TEST-CLIENTE',
+    dataContractId: customerContract.id,
+    sourceCatalogEntryId: undefined,
+    selectedSourceExecutionId: undefined,
+    attachedSources: [],
+    validationRules: [],
+    composition: {
+      ...INITIAL_CONFIGURED_OUTPUTS[0].composition,
+      includeHeader: true,
+      delimiter: ';' as const,
+    },
+    fields: [
+      {
+        ...INITIAL_CONFIGURED_OUTPUTS[0].fields[0],
+        id: 'FLD-1',
+        technicalName: 'corte',
+        label: 'Fecha Corte',
+        recordSection: 'Detalle',
+        dataType: 'Fecha' as const,
+        formatMask: 'yyyy-MM-dd',
+        length: 10,
+        required: true,
+        order: 1,
+        mapping: {
+          ...INITIAL_CONFIGURED_OUTPUTS[0].fields[0].mapping,
+          sourceField: 'fecha_corte',
+          sourceContractId: customerContract.id,
+          transformationKind: 'Directo' as const,
+          mappingStatus: 'Confirmado por usuario' as const,
+        },
+      },
+      {
+        ...INITIAL_CONFIGURED_OUTPUTS[0].fields[1],
+        id: 'FLD-2',
+        technicalName: 'obligacion',
+        label: 'Obligación',
+        recordSection: 'Detalle',
+        dataType: 'Texto' as const,
+        length: 12,
+        required: true,
+        order: 2,
+        mapping: {
+          ...INITIAL_CONFIGURED_OUTPUTS[0].fields[1].mapping,
+          sourceField: 'id_credito',
+          sourceContractId: customerContract.id,
+          transformationKind: 'Directo' as const,
+          mappingStatus: 'Confirmado por usuario' as const,
+        },
+      },
+      {
+        ...INITIAL_CONFIGURED_OUTPUTS[0].fields[3],
+        id: 'FLD-3',
+        technicalName: 'saldo',
+        label: 'Saldo Capital',
+        recordSection: 'Detalle',
+        dataType: 'Decimal' as const,
+        length: 18,
+        required: true,
+        order: 3,
+        mapping: {
+          ...INITIAL_CONFIGURED_OUTPUTS[0].fields[3].mapping,
+          sourceField: 'saldo_capital',
+          sourceContractId: customerContract.id,
+          transformationKind: 'Directo' as const,
+          mappingStatus: 'Confirmado por usuario' as const,
+        },
+      },
+    ],
+  };
+
+  // 5. Generate physical CSV artifact from customer source batch
+  const genResult = generateOutputArtifact({
+    output: testOutput,
+    outputType,
+    contract: customerContract,
+    allContracts: [customerContract],
+    context: {
+      entidad: 'Cooperativa Financiera de Antioquia',
+      formato: 'CLI_OUT',
+      periodo: '2026-11',
+      version: '1',
+      consecutivo: '01',
+    },
+    entidad: 'Cooperativa Financiera de Antioquia',
+  });
+
+  assert.equal(genResult.isRealExecutableGeneration, true);
+  assert.equal(genResult.rowsProcessed, 2);
+  assert.equal(genResult.readinessMatrix.downloadAvailabilityStatus.canDownload, true);
+  const lines = genResult.content.trim().split(/\r?\n/);
+  assert.equal(lines.length, 3); // header + 2 rows
+  assert.equal(lines[0], 'corte;obligacion;saldo');
+  assert.equal(lines[1].includes('000123'), true); // Leading zero fully preserved in generated artifact!
+  assert.equal(lines[2].includes('000124'), true);
+});
+
+test('Step 6 physical download is blocked when no compatible data batch exists (CES-DAT-000) and enabled when compatible batch is present', () => {
+  const output = INITIAL_CONFIGURED_OUTPUTS.find((o) => o.id === 'OUT-CSV-DEMO-A')!;
+  const outputType = INITIAL_OUTPUT_TYPES.find((t) => t.id === output.outputTypeId)!;
+  const contract = INITIAL_DATA_CONTRACTS.find((c) => c.id === output.dataContractId)!;
+  const daqueProfile = INITIAL_DAQUE_PROFILES[0];
+
+  // Period 2026-12 has NO compatible batch
+  const resultWithoutBatch = generateOutputArtifact({
+    output,
+    outputType,
+    contract,
+    allContracts: INITIAL_DATA_CONTRACTS,
+    daqueProfile,
+    context: {
+      entidad: 'Entidad DEMO',
+      formato: output.code,
+      periodo: '2026-12',
+      version: output.version,
+      consecutivo: '01',
+    },
+    entidad: 'Entidad DEMO',
+  });
+
+  assert.equal(resultWithoutBatch.isRealExecutableGeneration, false);
+  assert.equal(resultWithoutBatch.readinessMatrix.downloadAvailabilityStatus.canDownload, false);
+  assert.equal(resultWithoutBatch.findings.some((f) => f.code === 'CES-DAT-000'), true);
+
+  // Period 2026-11 HAS a compatible batch
+  const resultWithBatch = generateOutputArtifact({
+    output,
+    outputType,
+    contract,
+    allContracts: INITIAL_DATA_CONTRACTS,
+    daqueProfile,
+    context: {
+      entidad: 'Entidad DEMO',
+      formato: output.code,
+      periodo: '2026-11',
+      version: output.version,
+      consecutivo: '01',
+    },
+    entidad: 'Entidad DEMO',
+  });
+
+  assert.equal(resultWithBatch.isRealExecutableGeneration, true);
+  assert.equal(resultWithBatch.readinessMatrix.downloadAvailabilityStatus.canDownload, true);
+  assert.equal(resultWithBatch.findings.some((f) => f.code === 'CES-DAT-000'), false);
+});
+
+test('Period 2026-12 has 7 structure-available reports but 0 compatible batches, and returning to 2026-11 restores batch without mutating dates', () => {
+  // Check available system reports for 2026-12
+  const reportsWithStructure = INITIAL_CATALOG_SOURCE_FORMATS.filter((entry) => {
+    if (!entry.linkedDataContractId) return false;
+    const contract = INITIAL_DATA_CONTRACTS.find((c) => c.id === entry.linkedDataContractId);
+    return Boolean(contract && contract.fields.length > 0);
+  });
+  assert.equal(reportsWithStructure.length, 7);
+
+  // When evaluated for 2026-12: all 7 indicate hasDataBatch = false
+  const batches202612 = reportsWithStructure.map((entry) => {
+    const contract = INITIAL_DATA_CONTRACTS.find((c) => c.id === entry.linkedDataContractId)!;
+    return resolveSourceExecutionRows({
+      contract,
+      periodo: '2026-12',
+      entidad: 'Entidad DEMO',
+      sourceCatalogEntryId: entry.id,
+    });
+  });
+  const readyCount202612 = batches202612.filter((b) => b.hasDataBatch && b.rows.length > 0).length;
+  assert.equal(readyCount202612, 0); // 0 with data! Not declared ready for generation!
+
+  // When evaluated for 2026-11: primary reports have compatible batches
+  const batches202611 = reportsWithStructure.map((entry) => {
+    const contract = INITIAL_DATA_CONTRACTS.find((c) => c.id === entry.linkedDataContractId)!;
+    return resolveSourceExecutionRows({
+      contract,
+      periodo: '2026-11',
+      entidad: 'Entidad DEMO',
+      sourceCatalogEntryId: entry.id,
+    });
+  });
+  const readyCount202611 = batches202611.filter((b) => b.hasDataBatch && b.rows.length > 0).length;
+  assert.equal(readyCount202611 > 0, true);
+
+  // Dates in the original contract batches are NEVER mutated by checking different periods
+  const primaryContract = INITIAL_DATA_CONTRACTS.find((c) => c.id === 'DC-CARTERA-01')!;
+  const batch11 = (primaryContract.executionBatches || []).find((b) => b.cutoffPeriod === '2026-11')!;
+  assert.equal(batch11.cutoffDate, '2026-11-30');
+  assert.equal(batch11.cutoffPeriod, '2026-11');
+});
+
+test('Step 6 preview classification accurately differentiates missing batch from empty dataset policy from real physical content', () => {
+  const output = INITIAL_CONFIGURED_OUTPUTS.find((o) => o.id === 'OUT-CSV-DEMO-A')!;
+  const outputType = INITIAL_OUTPUT_TYPES.find((t) => t.id === output.outputTypeId)!;
+  const contract = INITIAL_DATA_CONTRACTS.find((c) => c.id === output.dataContractId)!;
+
+  // Case A: Missing batch for 2026-12 -> CES-DAT-000 emitted, isRealExecutableGeneration = false
+  const missingBatchResult = generateOutputArtifact({
+    output,
+    outputType,
+    contract,
+    allContracts: INITIAL_DATA_CONTRACTS,
+    context: { entidad: 'Entidad DEMO', formato: output.code, periodo: '2026-12', version: output.version },
+    entidad: 'Entidad DEMO',
+  });
+  assert.equal(missingBatchResult.isRealExecutableGeneration, false);
+  assert.equal(missingBatchResult.findings.some((f) => f.code === 'CES-DAT-000'), true);
+
+  // Case B: Compatible batch for 2026-11 -> real executable generation with rows processed
+  const compatibleBatchResult = generateOutputArtifact({
+    output,
+    outputType,
+    contract,
+    allContracts: INITIAL_DATA_CONTRACTS,
+    context: { entidad: 'Entidad DEMO', formato: output.code, periodo: '2026-11', version: output.version },
+    entidad: 'Entidad DEMO',
+  });
+  assert.equal(compatibleBatchResult.isRealExecutableGeneration, true);
+  assert.equal(compatibleBatchResult.rowsProcessed > 0, true);
+});
+
+test('TOTALiA mapping proposal preserves leading zero "000123" as text and never maps identifier to person name', () => {
+  const outputFields: StructureField[] = [
+    {
+      ...INITIAL_CONFIGURED_OUTPUTS[0].fields[1],
+      id: 'FLD-ID',
+      technicalName: 'numero_obligacion',
+      label: 'Número de Obligación',
+      dataType: 'Texto',
+      length: 12,
+      mapping: {
+        ...INITIAL_CONFIGURED_OUTPUTS[0].fields[1].mapping,
+        sourceField: '',
+        mappingStatus: 'Sin asignar',
+      },
+    },
+    {
+      ...INITIAL_CONFIGURED_OUTPUTS[0].fields[2],
+      id: 'FLD-NOM',
+      technicalName: 'nombre_titular',
+      label: 'Nombre o Razón Social',
+      dataType: 'Texto',
+      length: 50,
+      mapping: {
+        ...INITIAL_CONFIGURED_OUTPUTS[0].fields[2].mapping,
+        sourceField: '',
+        mappingStatus: 'Sin asignar',
+      },
+    },
+  ];
+
+  const contractFields: DataContractField[] = [
+    {
+      name: 'id_obligacion',
+      label: 'Número de Obligación o Crédito',
+      dataType: 'Texto',
+      length: 12,
+      nullable: false,
+      lineage: 'Core.Obligaciones.Id',
+      sampleValues: ['000123', '000124', '000125'],
+    },
+    {
+      name: 'nombre_deudor',
+      label: 'Nombre Completo del Cliente',
+      dataType: 'Texto',
+      length: 50,
+      nullable: false,
+      lineage: 'Core.Clientes.Nombre',
+      sampleValues: ['Ana María Pérez', 'Carlos Gómez'],
+    },
+  ];
+
+  const proposals = proposeFieldMappings(outputFields, contractFields, 'CTR-TEST', true);
+
+  const idProposal = proposals.proposals.find((p) => p.technicalName === 'numero_obligacion')!;
+  const nomProposal = proposals.proposals.find((p) => p.technicalName === 'nombre_titular')!;
+
+  // id_obligacion maps to numero_obligacion, NEVER to nombre_deudor
+  assert.equal(idProposal.proposedSource, 'id_obligacion');
+  // nombre_deudor maps to nombre_titular, NEVER to id_obligacion
+  assert.equal(nomProposal.proposedSource, 'nombre_deudor');
+});
+
+test('Structure design can be drafted and saved even with zero data batches for the period', () => {
+  const output = INITIAL_CONFIGURED_OUTPUTS.find((o) => o.id === 'OUT-CSV-DEMO-A')!;
+  const outputType = INITIAL_OUTPUT_TYPES.find((t) => t.id === output.outputTypeId)!;
+  const contract = INITIAL_DATA_CONTRACTS.find((c) => c.id === output.dataContractId)!;
+
+  // Evaluate output for 2026-12 (which has 0 data batches)
+  const result = generateOutputArtifact({
+    output,
+    outputType,
+    contract,
+    allContracts: INITIAL_DATA_CONTRACTS,
+    context: { entidad: 'Entidad DEMO', formato: output.code, periodo: '2026-12', version: output.version },
+    entidad: 'Entidad DEMO',
+  });
+
+  // Structural checks: fields, names, lengths are valid
+  const structuralBlockers = result.findings.filter(
+    (f) =>
+      f.severity === 'Bloqueante' &&
+      f.layer !== 'Datos del formato (DAQUE)' &&
+      f.code !== 'CES-DAT-000'
+  );
+  assert.equal(structuralBlockers.length, 0);
+
+  // In absence of data batch, 0 rows processed and CES-DAT-000 is emitted
+  assert.equal(result.rowsProcessed, 0);
+  assert.equal(result.findings.some((f) => f.code === 'CES-DAT-000'), true);
+
+  // Physical download is blocked until batch is loaded
+  assert.equal(result.readinessMatrix.downloadAvailabilityStatus.canDownload, false);
+});
+
 
 

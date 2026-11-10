@@ -548,7 +548,7 @@ export function applyDateMask(rawDate: string, mask: string): string {
 const FIELD_SYNONYM_GROUPS: string[][] = [
   ['id_obligacion', 'identificador', 'idobligacion', 'nro_obligacion', 'numero_obligacion', 'num_obligacion', 'obligacion'],
   ['nit', 'nit_deudor', 'identificacion', 'nro_identificacion', 'numero_identificacion', 'num_documento', 'id_deudor'],
-  ['nombre', 'razon_social', 'nombres', 'primer_nombre'],
+  ['nombre', 'razon_social', 'nombres', 'primer_nombre', 'nombre_titular', 'nombre_deudor'],
   ['apellido_1', 'primer_apellido', 'apellido1', 'apellido_paterno'],
   ['fecha_corte', 'fecha', 'fecha_operacion', 'fechacorte', 'f_corte', 'fec_corte', 'periodo_corte'],
   ['saldo', 'saldo_capital', 'saldocapital', 'valor_saldo', 'monto', 'importe', 'saldo_obligacion'],

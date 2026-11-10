@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
+  AlertCircle,
   AlertTriangle,
   ArrowDown,
   ArrowLeft,
@@ -8,18 +9,24 @@ import {
   Check,
   CheckCircle2,
   Copy,
+  Database,
   Download,
   Eye,
   FileCheck2,
   FileCode2,
   GitBranch,
+  HelpCircle,
   Info,
+  Layers,
   Link2,
   Lock,
   Plus,
+  RefreshCw,
   Save,
   Send,
   ShieldAlert,
+  Sliders,
+  Sparkles,
   Trash2,
   Wand2,
 } from 'lucide-react';
@@ -44,6 +51,10 @@ import {
 } from '../domain/types';
 import { HelpTooltip } from './HelpTooltip';
 import { Step3DataOriginView } from './Step3DataOriginView';
+import {
+  TotaliaBuilderAssistantModal,
+  TotaliaActionType,
+} from './TotaliaBuilderAssistantModal';
 
 const WIZARD_STEPS = [
   { step: 1, title: 'Paso 1. Datos generales', subtitle: 'Identificación y tipo de archivo' },
@@ -70,6 +81,7 @@ export const VisualOutputBuilderView: React.FC = () => {
     associations,
     daqueProfiles,
     executionRuns,
+    normativeSources,
     globalEntity,
     globalPeriod,
     lastSavedAt,
@@ -106,6 +118,16 @@ export const VisualOutputBuilderView: React.FC = () => {
 
   // Modal: Confirm File Type Change in Step 1
   const [pendingOutputTypeId, setPendingOutputTypeId] = useState<string | null>(null);
+
+  // TOTALiA Contextual Assistant Modal State
+  const [showTotaliaModal, setShowTotaliaModal] = useState<boolean>(false);
+  const [totaliaModalAction, setTotaliaModalAction] =
+    useState<TotaliaActionType>('siguiente_paso');
+
+  const openTotaliaWithAction = (action: TotaliaActionType) => {
+    setTotaliaModalAction(action);
+    setShowTotaliaModal(true);
+  };
 
   // Step 3: Auto-map overwrite option
   const [overwriteConfirmedMappings, setOverwriteConfirmedMappings] = useState<boolean>(false);
@@ -175,6 +197,26 @@ export const VisualOutputBuilderView: React.FC = () => {
     [associations, draft.id, draft.baseOutputId]
   );
 
+  const activeCatalogEntry = useMemo(() => {
+    if (draft.sourceCatalogEntryId) {
+      const match = catalogSourceFormats.find((e) => e.id === draft.sourceCatalogEntryId);
+      if (match) return match;
+    }
+    const attachedId = draft.attachedSources?.[0]?.catalogEntryId;
+    if (attachedId) {
+      const match = catalogSourceFormats.find((e) => e.id === attachedId);
+      if (match) return match;
+    }
+    return (
+      catalogSourceFormats.find((e) => e.linkedDataContractId === selectedDataContract.id) || null
+    );
+  }, [
+    draft.sourceCatalogEntryId,
+    draft.attachedSources,
+    catalogSourceFormats,
+    selectedDataContract.id,
+  ]);
+
   const activeFormat = useMemo(() => {
     const firstAssoc = linkedAssociations[0];
     return (
@@ -230,6 +272,10 @@ export const VisualOutputBuilderView: React.FC = () => {
       fieldId?: string;
       fieldTechnicalName?: string;
       title: string;
+      location: string;
+      cause: string;
+      consequence: string;
+      action: string;
       howToFix: string;
     }[] = [];
 
@@ -239,6 +285,10 @@ export const VisualOutputBuilderView: React.FC = () => {
         severity: 'Bloqueante',
         step: 1,
         title: 'Nombre funcional o código identificador vacío',
+        location: 'Paso 1 · Datos generales',
+        cause: 'El formulario de identificación no tiene diligenciado el nombre descriptivo o el código regulatorio.',
+        consequence: 'Impide identificar unívocamente la salida y bloqueará el paso a revisión o publicación.',
+        action: 'Diligencie el nombre y el código identificador en el Paso 1.',
         howToFix: 'En el Paso 1 (Datos generales), complete el nombre y el código identificador.',
       });
     }
@@ -249,6 +299,10 @@ export const VisualOutputBuilderView: React.FC = () => {
         severity: 'Bloqueante',
         step: 2,
         title: 'La salida no tiene campos definidos',
+        location: 'Paso 2 · Estructura de campos',
+        cause: 'No se ha configurado ninguna columna en la sección de detalle.',
+        consequence: 'No es posible serializar ningún registro de archivo.',
+        action: 'Agregue campos manualmente o use "Proponer campos" con TOTALiA® en el Paso 2.',
         howToFix: 'En el Paso 2 (Estructura del archivo), agregue al menos un campo.',
       });
     }
@@ -262,6 +316,10 @@ export const VisualOutputBuilderView: React.FC = () => {
           fieldId: f.id,
           fieldTechnicalName: f.technicalName,
           title: `Longitud inválida (${f.length}) en el campo "${f.technicalName}"`,
+          location: `Paso 2 · Campo "${f.technicalName}"`,
+          cause: 'La longitud declarada es 0 o negativa.',
+          consequence: 'Impide el formateo correcto y la reserva de espacio en archivos TXT o bases de datos.',
+          action: `Asigne una longitud mayor a 0 según el instructivo oficial en el Paso 2.`,
           howToFix: `En el Paso 2, seleccione el campo "${f.technicalName}" y asigne una longitud mayor a 0 según el instructivo oficial.`,
         });
       }
@@ -281,6 +339,10 @@ export const VisualOutputBuilderView: React.FC = () => {
           fieldId: f.id,
           fieldTechnicalName: f.technicalName,
           title: `Campo obligatorio "${f.technicalName}" sin origen de datos asignado`,
+          location: `Paso 3 · Mapeo de "${f.technicalName}"`,
+          cause: 'El campo está marcado como obligatorio pero no tiene columna origen, constante ni transformación asociada.',
+          consequence: 'Generará valores vacíos o nulos que serán rechazados por el motor de serialización y la entidad receptora.',
+          action: `Asigne una columna de la fuente o configure una transformación en el Paso 3.`,
           howToFix: `En el Paso 3 (Origen de datos y correspondencia de campos), seleccione una columna de la fuente o defina una constante/variable de contexto para "${f.technicalName}".`,
         });
       }
@@ -293,6 +355,10 @@ export const VisualOutputBuilderView: React.FC = () => {
           fieldId: f.id,
           fieldTechnicalName: f.technicalName,
           title: `Campo "${f.technicalName}" requiere revisión por cambio en la estructura de origen`,
+          location: `Paso 3 · Correspondencia de "${f.technicalName}"`,
+          cause: `La columna de origen "${f.mapping.sourceField}" fue renombrada, eliminada o alterada en el contrato de datos.`,
+          consequence: 'La generación fallará en tiempo de ejecución al intentar leer un campo inexistente o con tipo incompatible.',
+          action: 'Revise la columna en el Paso 3 y confirme nuevamente la correspondencia.',
           howToFix: `En el Paso 3, revise la columna origen "${f.mapping.sourceField}" (${f.mapping.changeImpactNote || 'estructura actualizada'}) y confirme nuevamente la correspondencia.`,
         });
       }
@@ -313,7 +379,11 @@ export const VisualOutputBuilderView: React.FC = () => {
             step: 2,
             fieldId: next.id,
             fieldTechnicalName: next.technicalName,
-            title: `Solapamiento de posiciones entre "${cur.technicalName}" (termina en ${curEnd}) y "${next.technicalName}" (inicia en ${next.startPosition || 1})`,
+            title: `Solapamiento de posiciones entre "${cur.technicalName}" y "${next.technicalName}"`,
+            location: `Paso 2 · Posición fija (${curEnd} >= ${next.startPosition || 1})`,
+            cause: `El campo "${cur.technicalName}" termina en posición ${curEnd} y el siguiente inicia antes (${next.startPosition || 1}).`,
+            consequence: 'Generará registros deformados en archivos de ancho fijo que corromperán la lectura de los datos.',
+            action: 'Pulse "Recalcular posiciones TXT automáticamente" en el Paso 2.',
             howToFix:
               'En el Paso 2, pulse "Recalcular posiciones TXT automáticamente" para alinear las posiciones consecutivamente sin cruces.',
           });
@@ -324,13 +394,309 @@ export const VisualOutputBuilderView: React.FC = () => {
     return issues;
   }, [draft, selectedOutputType.family]);
 
-  const blockingIssuesCount =
+  // Structural blockers (lengths, technical names, overlaps, mapping invalidations)
+  const structuralBlockingCount =
     configDiagnostics.filter((d) => d.severity === 'Bloqueante').length +
     compiledResult.findings.filter(
-      (f) => f.severity === 'Bloqueante' && f.layer !== 'Datos del formato (DAQUE)'
+      (f) =>
+        f.severity === 'Bloqueante' &&
+        f.layer !== 'Datos del formato (DAQUE)' &&
+        f.code !== 'CES-DAT-000'
     ).length;
 
+  // Total blockers across all layers including DAQUE data availability (CES-DAT-000)
+  const totalBlockingCount =
+    configDiagnostics.filter((d) => d.severity === 'Bloqueante').length +
+    compiledResult.findings.filter((f) => f.severity === 'Bloqueante').length;
+
+  // Backward compatibility alias for structural integrity
+  const blockingIssuesCount = structuralBlockingCount;
+
   const isPhysicalEngineSupported = selectedOutputType.canGenerateRealFileInBrowser;
+
+  const canDownloadPhysicalArtifact =
+    isPhysicalEngineSupported &&
+    totalBlockingCount === 0 &&
+    compiledResult.readinessMatrix.downloadAvailabilityStatus.canDownload &&
+    compiledResult.isRealExecutableGeneration;
+
+  // 5 Advancement States (Mutually Exclusive / Distinct per user prompt)
+  const advancementState = useMemo(() => {
+    if (draft.fields.length === 0 || !draft.name.trim() || !draft.code.trim()) {
+      return {
+        key: 'incompleta' as const,
+        label: 'Estructura incompleta',
+        desc: 'Faltan campos o datos de identificación obligatorios en la salida.',
+        badgeClass: 'bg-rose-100 text-rose-950 border-rose-300',
+      };
+    }
+    if (structuralBlockingCount > 0) {
+      return {
+        key: 'errores' as const,
+        label: 'Errores por corregir',
+        desc: `${structuralBlockingCount} error(es) bloqueante(s) de estructura, longitud o correspondencia.`,
+        badgeClass: 'bg-rose-100 text-rose-950 border-rose-300',
+      };
+    }
+    const hasBatch = Boolean(
+      compiledResult.resolvedPrimaryBatch && compiledResult.isRealExecutableGeneration
+    );
+    if (!hasBatch) {
+      return {
+        key: 'pendiente_datos' as const,
+        label: 'Estructura válida, pendiente de datos',
+        desc: `Estructura técnicamente correcta. Falta lote de datos compatible en ${globalPeriod} para generación operativa.`,
+        badgeClass: 'bg-amber-100 text-amber-950 border-amber-300',
+      };
+    }
+    const hasUnconfirmed = draft.fields.some(
+      (f) => f.mapping.mappingStatus === 'Propuesta automática (Requiere confirmación)'
+    );
+    const hasWarnings = compiledResult.findings.some((f) => f.severity === 'Advertencia');
+    if (hasUnconfirmed || hasWarnings) {
+      return {
+        key: 'pendientes_validar' as const,
+        label: 'Datos disponibles, pendientes de validar',
+        desc: 'Lote compatible asignado con correspondencias o advertencias que requieren revisión.',
+        badgeClass: 'bg-blue-100 text-blue-950 border-blue-300',
+      };
+    }
+    return {
+      key: 'lista' as const,
+      label: 'Configuración lista para la acción correspondiente',
+      desc: 'Estructura y datos verificados. Lista para generar archivo o tramitar publicación.',
+      badgeClass: 'bg-emerald-100 text-emerald-950 border-emerald-300',
+    };
+  }, [
+    draft.fields,
+    draft.name,
+    draft.code,
+    structuralBlockingCount,
+    compiledResult.resolvedPrimaryBatch,
+    compiledResult.isRealExecutableGeneration,
+    compiledResult.findings,
+    globalPeriod,
+  ]);
+
+  // Step Guidance definitions (Paso 1 a 7)
+  const currentStepGuidance = useMemo(() => {
+    switch (builderStep) {
+      case 1:
+        return {
+          title: 'Paso 1. Datos generales de la salida',
+          whatConfiguring: `Identificación funcional, código único, organismo supervisor y tipo de archivo (${selectedOutputType.family}).`,
+          whatNeeded: 'Nombre funcional del reporte, código regulatorio y familia técnica.',
+          whatMissing:
+            !draft.name.trim() || !draft.code.trim()
+              ? 'Complete el nombre funcional y el código identificador.'
+              : 'Identificación completa y válida.',
+          nextAction: 'Continuar a 2. Estructura del archivo',
+          nextStep: 2,
+          blockers:
+            !draft.name.trim() || !draft.code.trim()
+              ? 'Nombre o código vacíos impiden la publicación.'
+              : null,
+        };
+      case 2:
+        return {
+          title: 'Paso 2. Estructura del archivo y campos',
+          whatConfiguring: `Secciones, columnas, tipos de datos (${selectedOutputType.family}), longitudes y posiciones.`,
+          whatNeeded: 'Especificación oficial de columnas o instructivo del regulador.',
+          whatMissing:
+            draft.fields.length === 0
+              ? 'No hay campos creados. Agregue campos o use "Proponer campos" con TOTALiA®.'
+              : draft.fields.some((f) => !f.length)
+              ? 'Hay campos con longitud 0 o inválida.'
+              : 'Estructura de campos completa.',
+          nextAction: 'Continuar a 3. Origen de datos y correspondencia',
+          nextStep: 3,
+          blockers:
+            draft.fields.length === 0 || draft.fields.some((f) => !f.length)
+              ? 'Campos incompletos impiden la generación de archivo.'
+              : null,
+        };
+      case 3:
+        return {
+          title: 'Paso 3. Origen de datos y correspondencia de campos',
+          whatConfiguring:
+            'Fuente que aporta la información (informe generado o fuente cliente), lote de registros y asignación de cada campo.',
+          whatNeeded: 'Informe del sistema o archivo de registros del cliente para el periodo.',
+          whatMissing:
+            draft.fields.some((f) => f.required && !f.mapping.sourceField && !f.defaultValue)
+              ? 'Existen campos obligatorios sin columna de origen asignada ni transformación.'
+              : !compiledResult.resolvedPrimaryBatch
+              ? `Sin lote de datos para el periodo ${globalPeriod}. La estructura se puede guardar como borrador; se requerirá lote para generar archivo físico.`
+              : 'Origen y correspondencias asignadas.',
+          nextAction: 'Continuar a 4. Validaciones y reglas',
+          nextStep: 4,
+          blockers: draft.fields.some(
+            (f) => f.required && !f.mapping.sourceField && !f.defaultValue
+          )
+            ? 'Campos obligatorios sin origen asignado impiden la generación operativa.'
+            : null,
+        };
+      case 4:
+        return {
+          title: 'Paso 4. Validaciones y reglas de control',
+          whatConfiguring:
+            'Reglas de no nulidad, límites de valor, expresiones regulares y perfiles DAQUE.',
+          whatNeeded: 'Reglas de consistencia exigidas por la entidad supervisora.',
+          whatMissing:
+            draft.validationRules.length === 0
+              ? 'Sin reglas personalizadas añadidas (aplica validaciones técnicas básicas).'
+              : `${draft.validationRules.length} regla(s) activas.`,
+          nextAction: 'Continuar a 5. Nomenclatura y entrega',
+          nextStep: 5,
+          blockers: null,
+        };
+      case 5:
+        return {
+          title: 'Paso 5. Nomenclatura, empaquetado y entrega',
+          whatConfiguring:
+            'Patrón de nombre dinámico ({entidad}, {periodo}), formato de compresión y canal de transmisión.',
+          whatNeeded: 'Nomenclatura oficial exigida por la entidad.',
+          whatMissing: 'Parámetros de entrega configurados.',
+          nextAction: 'Continuar a 6. Vista previa y pruebas',
+          nextStep: 6,
+          blockers: null,
+        };
+      case 6:
+        return {
+          title: 'Paso 6. Vista previa, pruebas y preparación técnica',
+          whatConfiguring:
+            'Inspección del archivo físico, matriz de preparación técnica y descarga del artefacto.',
+          whatNeeded: 'Lote compatible para verificar el resultado final con datos reales.',
+          whatMissing:
+            !compiledResult.resolvedPrimaryBatch
+              ? `Falta lote compatible para ${globalEntity} en ${globalPeriod} (CES-DAT-000). Descarga bloqueada hasta cargar datos en Paso 3.`
+              : 'Verificación lista.',
+          nextAction: 'Continuar a 7. Guardar y publicar',
+          nextStep: 7,
+          blockers: !canDownloadPhysicalArtifact
+            ? 'Descarga deshabilitada por falta de lote compatible o bloqueos de formato.'
+            : null,
+        };
+      case 7:
+        return {
+          title: 'Paso 7. Guardar, resumen y ciclo de vida de la versión',
+          whatConfiguring:
+            'Transición de estado de versión (Borrador -> En revisión -> Aprobada -> Publicada) y bitácora de auditoría.',
+          whatNeeded: 'Aprobación funcional según atribuciones del perfil.',
+          whatMissing:
+            structuralBlockingCount > 0
+              ? 'Corrija los errores de estructura antes de solicitar aprobación.'
+              : `Versión lista en estado: ${draft.status}.`,
+          nextAction: 'Finalizar configuración y revisar asociaciones en Módulo D',
+          nextStep: 7,
+          blockers: structuralBlockingCount > 0 ? 'Errores bloqueantes pendientes.' : null,
+        };
+      default:
+        return {
+          title: 'Diseñador de salidas',
+          whatConfiguring: '',
+          whatNeeded: '',
+          whatMissing: '',
+          nextAction: '',
+          nextStep: 1,
+          blockers: null,
+        };
+    }
+  }, [
+    builderStep,
+    draft,
+    selectedOutputType.family,
+    compiledResult.resolvedPrimaryBatch,
+    globalPeriod,
+    globalEntity,
+    structuralBlockingCount,
+    canDownloadPhysicalArtifact,
+  ]);
+
+  // Header and diagnostics for Step 6 preview (Differentiating the 4 required cases)
+  const previewArtifactHeader = useMemo(() => {
+    // Case 1: Configuration blocking errors
+    if (structuralBlockingCount > 0) {
+      return {
+        title: `Generación bloqueada por errores de configuración (${structuralBlockingCount} error(es))`,
+        subtitle:
+          'Corrija las definiciones de campos y correspondencias en los pasos 1–4 para compilar el archivo físico.',
+        isPhysicalReady: false,
+        badgeLabel: 'Generación bloqueada',
+        badgeClass: 'bg-rose-100 text-rose-900 border border-rose-300',
+      };
+    }
+
+    // Case 2: Absence of compatible data batch (CES-DAT-000)
+    const hasBatch = Boolean(
+      compiledResult.resolvedPrimaryBatch && compiledResult.isRealExecutableGeneration
+    );
+    const hasCesDat000 = compiledResult.findings.some((f) => f.code === 'CES-DAT-000');
+
+    if (!hasBatch || hasCesDat000) {
+      return {
+        title: 'Vista previa estructural — sin archivo generado',
+        subtitle: `Sin lote compatible para "${globalEntity}" en el periodo "${globalPeriod}" (CES-DAT-000). Se muestra la estructura como plantilla de diseño; no se genera archivo físico.`,
+        isPhysicalReady: false,
+        badgeLabel: 'Vista previa estructural',
+        badgeClass: 'bg-amber-100 text-amber-950 border border-amber-300',
+      };
+    }
+
+    // Case 3: Batch exists but has 0 records (distinguishing empty policy)
+    if (compiledResult.rowsProcessed === 0) {
+      const allowsEmpty =
+        draft.composition.emptyDatasetPolicy !== 'Bloquear generación';
+      if (allowsEmpty) {
+        return {
+          title: 'Archivo generado sin registros de detalle (Permitido por política de archivo vacío)',
+          subtitle: `La configuración autoriza la generación de un archivo sin registros de movimiento (${draft.composition.emptyDatasetPolicy}).`,
+          isPhysicalReady: true,
+          badgeLabel: 'Archivo vacío permitido',
+          badgeClass: 'bg-blue-100 text-blue-900 border border-blue-300',
+        };
+      } else {
+        return {
+          title: `Lote existente con 0 registros — Archivo vacío generado (${compiledResult.resolvedPrimaryBatch?.executionCode})`,
+          subtitle: 'El lote no contiene registros de detalle para este corte.',
+          isPhysicalReady: true,
+          badgeLabel: 'Lote con 0 registros',
+          badgeClass: 'bg-amber-100 text-amber-950 border border-amber-300',
+        };
+      }
+    }
+
+    // Case 4: Binary or non-physical in-browser serialisation (e.g. AVRO)
+    if (!isPhysicalEngineSupported) {
+      return {
+        title: `Vista previa de esquema y estructura (${compiledResult.rowsProcessed} registros · Sin binario)`,
+        subtitle: `Archivo: ${compiledResult.fileName} · ${compiledResult.engineNotice}`,
+        isPhysicalReady: true,
+        badgeLabel: 'Esquema validado',
+        badgeClass: 'bg-sky-100 text-sky-900 border border-sky-300',
+      };
+    }
+
+    // Case 5: Valid physical artifact generated
+    return {
+      title: `Contenido físico generado (${compiledResult.rowsProcessed} registros · Corte ${globalPeriod})`,
+      subtitle: `Archivo: ${compiledResult.fileName} · ${compiledResult.engineNotice}`,
+      isPhysicalReady: true,
+      badgeLabel: 'Archivo generado',
+      badgeClass: 'bg-emerald-100 text-emerald-900 border border-emerald-300',
+    };
+  }, [
+    structuralBlockingCount,
+    compiledResult.resolvedPrimaryBatch,
+    compiledResult.isRealExecutableGeneration,
+    compiledResult.findings,
+    compiledResult.rowsProcessed,
+    compiledResult.fileName,
+    compiledResult.engineNotice,
+    draft.composition.emptyDatasetPolicy,
+    isPhysicalEngineSupported,
+    globalEntity,
+    globalPeriod,
+  ]);
 
   const selectedField = useMemo(
     () => draft.fields.find((f) => f.id === selectedFieldId) || draft.fields[0] || null,
@@ -671,10 +1037,10 @@ export const VisualOutputBuilderView: React.FC = () => {
 
   const handleDownloadPreviewArtifact = () => {
     if (!isPhysicalEngineSupported) return;
-    if (blockingIssuesCount > 0) {
+    if (!canDownloadPhysicalArtifact) {
       notify(
         'error',
-        'Corrija los errores bloqueantes de estructura, mapeo o reglas antes de descargar el archivo.'
+        'No es posible descargar el archivo físico: la generación está bloqueada por errores de configuración o por falta de un lote de datos compatible en el Paso 3.'
       );
       return;
     }
@@ -919,6 +1285,330 @@ export const VisualOutputBuilderView: React.FC = () => {
               </button>
             );
           })}
+        </div>
+      </div>
+
+      {/* Marco de Coherencia Operativa: Destino Regulatorio, Estructura de Salida y Origen de Datos */}
+      <div className="bg-white border border-slate-200 rounded-lg p-3.5 shadow-xs mb-4">
+        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2.5 pb-2.5 border-b border-slate-100">
+          <div className="flex items-center gap-2">
+            <div className="w-6 h-6 rounded bg-[#1E4E8C] text-white flex items-center justify-center text-xs font-bold shrink-0">
+              TR
+            </div>
+            <div>
+              <h3 className="text-xs font-bold text-slate-900 uppercase tracking-wider">
+                Marco de Coherencia Operativa
+              </h3>
+              <p className="text-[11px] text-slate-500">
+                Diferenciación de roles técnicos: <strong>Destino Regulatorio</strong>, <strong>Estructura de Salida</strong> y <strong>Origen de Información</strong>.
+              </p>
+            </div>
+          </div>
+          <span className="text-[11px] text-slate-500 italic bg-slate-50 px-2.5 py-1 rounded border border-slate-200">
+            El informe que aporta los datos (Origen) no tiene que coincidir con el formato que los presenta (Destino).
+          </span>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3 pt-2.5 text-xs">
+          {/* 1. DESTINO REGULATORIO */}
+          <div className="p-2.5 rounded bg-blue-50/70 border border-blue-200">
+            <div className="text-[10px] font-bold uppercase tracking-wider text-blue-900 flex items-center justify-between">
+              <span className="flex items-center gap-1">
+                <Send className="w-3 h-3 text-[#1E4E8C]" />
+                1. Destino Regulatorio (Módulo D)
+              </span>
+              <span className="px-1.5 py-0.2 rounded bg-blue-200 text-blue-900 text-[9px] font-bold">
+                {linkedAssociations.length > 0 ? `${linkedAssociations.length} asociación(es)` : 'Sin asociar'}
+              </span>
+            </div>
+            <div
+              className="mt-1 font-bold text-slate-900 truncate"
+              title={
+                linkedAssociations.length > 0
+                  ? `${activeFormat.code} — ${activeFormat.name}`
+                  : 'Pendiente de vincular en Módulo D'
+              }
+            >
+              {linkedAssociations.length > 0
+                ? `${activeFormat.code} — ${activeFormat.name}`
+                : 'Formato regulatorio pendiente de vincular en Módulo D'}
+            </div>
+            <div className="text-[11px] text-slate-600 mt-0.5">
+              Canal / Transmisión:{' '}
+              <strong className="text-slate-800">
+                {linkedAssociations[0]?.transmissionTypeId
+                  ? `${linkedAssociations[0].transmissionTypeId} (${linkedAssociations[0].environment})`
+                  : 'A definir en asociaciones'}
+              </strong>
+            </div>
+          </div>
+
+          {/* 2. ESTRUCTURA DE SALIDA EN CONFIGURACIÓN */}
+          <div className="p-2.5 rounded bg-amber-50/70 border border-amber-200">
+            <div className="text-[10px] font-bold uppercase tracking-wider text-amber-900 flex items-center justify-between">
+              <span className="flex items-center gap-1">
+                <FileCode2 className="w-3 h-3 text-amber-700" />
+                2. Estructura de Salida (Configurador)
+              </span>
+              <span className="px-1.5 py-0.2 rounded bg-amber-200 text-amber-900 text-[9px] font-bold font-mono">
+                {draft.code} (v{draft.version})
+              </span>
+            </div>
+            <div className="mt-1 font-bold text-slate-900 truncate" title={draft.name}>
+              {draft.name}
+            </div>
+            <div className="text-[11px] text-slate-600 mt-0.5">
+              Tipo archivo:{' '}
+              <strong className="text-slate-800">
+                {selectedOutputType.family} (.{selectedOutputType.extension})
+              </strong>{' '}
+              · {draft.fields.length} campos definidos
+            </div>
+          </div>
+
+          {/* 3. ORIGEN DE INFORMACIÓN */}
+          <div className="p-2.5 rounded bg-emerald-50/70 border border-emerald-200">
+            <div className="text-[10px] font-bold uppercase tracking-wider text-emerald-900 flex items-center justify-between">
+              <span className="flex items-center gap-1">
+                <Database className="w-3 h-3 text-emerald-700" />
+                3. Origen de Información (Paso 3)
+              </span>
+              <span className="px-1.5 py-0.2 rounded bg-emerald-200 text-emerald-900 text-[9px] font-bold">
+                {selectedDataContract.originRoute === 'Fuente proporcionada por el cliente'
+                  ? 'Fuente Cliente'
+                  : 'Formato Sistema'}
+              </span>
+            </div>
+            <div
+              className="mt-1 font-bold text-slate-900 truncate"
+              title={activeCatalogEntry?.reportName || selectedDataContract.name}
+            >
+              {activeCatalogEntry?.reportName || selectedDataContract.name}
+            </div>
+            <div className="text-[11px] text-slate-600 mt-0.5">
+              Lote para {globalPeriod}:{' '}
+              <strong
+                className={
+                  compiledResult.resolvedPrimaryBatch
+                    ? 'text-emerald-700'
+                    : 'text-rose-700'
+                }
+              >
+                {compiledResult.resolvedPrimaryBatch
+                  ? `${compiledResult.rowsProcessed} registros (${compiledResult.resolvedPrimaryBatch.executionCode})`
+                  : 'Sin lote compatible'}
+              </strong>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* GUÍA DE PASO Y ASISTENTE CONTEXTUAL TOTALiA® */}
+      <div className="bg-white border border-slate-200 rounded-lg p-4 shadow-xs space-y-3.5">
+        {/* Fila 1: Estados de avance y capacidades operativas independientes */}
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 pb-3 border-b border-slate-200">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
+              Estado de avance:
+            </span>
+            <span
+              className={`px-2.5 py-1 rounded-md text-xs font-bold border flex items-center gap-1.5 ${advancementState.badgeClass}`}
+            >
+              <span className="w-2 h-2 rounded-full bg-current"></span>
+              {advancementState.label}
+            </span>
+            <span className="text-[11px] text-slate-500 hidden sm:inline">
+              · {advancementState.desc}
+            </span>
+          </div>
+
+          {/* Tres indicadores independientes (no deducidos uno de otro) */}
+          <div className="flex flex-wrap items-center gap-2 text-[11px]">
+            <span
+              title="Guardado de borrador siempre disponible. Se almacena localmente en su navegador."
+              className="px-2 py-0.5 rounded bg-slate-100 text-slate-700 border border-slate-200 font-medium inline-flex items-center gap-1"
+            >
+              <Save className="w-3 h-3 text-slate-500" />
+              Borrador: <strong className="text-slate-900">Permitido (Navegador)</strong>
+            </span>
+
+            <span
+              title={
+                canDownloadPhysicalArtifact
+                  ? 'Archivo físico listo con lote compatible'
+                  : `Generación física en espera de lote compatible para ${globalPeriod} (CES-DAT-000)`
+              }
+              className={`px-2 py-0.5 rounded border font-medium inline-flex items-center gap-1 ${
+                canDownloadPhysicalArtifact
+                  ? 'bg-emerald-50 text-emerald-900 border-emerald-300'
+                  : 'bg-amber-50 text-amber-950 border-amber-300'
+              }`}
+            >
+              <FileCode2 className="w-3 h-3" />
+              Generación:{' '}
+              <strong>
+                {canDownloadPhysicalArtifact ? 'Habilitada' : 'Espera lote (CES-DAT-000)'}
+              </strong>
+            </span>
+
+            <span
+              title={
+                isImmutable
+                  ? 'Versión protegida (Inmutable). Cree una nueva revisión para publicar cambios.'
+                  : structuralBlockingCount === 0
+                  ? 'Estructura válida para publicar'
+                  : `Bloqueado por ${structuralBlockingCount} error(es) de estructura`
+              }
+              className={`px-2 py-0.5 rounded border font-medium inline-flex items-center gap-1 ${
+                isImmutable
+                  ? 'bg-slate-100 text-slate-700 border-slate-300'
+                  : structuralBlockingCount === 0
+                  ? 'bg-blue-50 text-blue-900 border-blue-300'
+                  : 'bg-rose-50 text-rose-950 border-rose-300'
+              }`}
+            >
+              <Send className="w-3 h-3" />
+              Publicación:{' '}
+              <strong>
+                {isImmutable
+                  ? 'Inmutable'
+                  : structuralBlockingCount === 0
+                  ? 'Habilitada'
+                  : 'Bloqueada'}
+              </strong>
+            </span>
+          </div>
+        </div>
+
+        {/* Fila 2: Orientación breve vinculada al paso activo */}
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-3 bg-slate-50/80 p-3 rounded-lg border border-slate-200/80 text-xs">
+          <div>
+            <div className="font-bold text-slate-700 uppercase text-[10px] tracking-wider">
+              Qué está configurando
+            </div>
+            <div className="text-slate-900 mt-0.5 leading-snug">
+              {currentStepGuidance.whatConfiguring}
+            </div>
+          </div>
+          <div>
+            <div className="font-bold text-slate-700 uppercase text-[10px] tracking-wider">
+              Qué información necesita
+            </div>
+            <div className="text-slate-900 mt-0.5 leading-snug">
+              {currentStepGuidance.whatNeeded}
+            </div>
+          </div>
+          <div>
+            <div className="font-bold text-slate-700 uppercase text-[10px] tracking-wider">
+              Qué falta por completar
+            </div>
+            <div
+              className={`mt-0.5 leading-snug font-medium ${
+                currentStepGuidance.whatMissing.includes('Falta') ||
+                currentStepGuidance.whatMissing.includes('Existen') ||
+                currentStepGuidance.whatMissing.includes('Complete')
+                  ? 'text-amber-900'
+                  : 'text-slate-700'
+              }`}
+            >
+              {currentStepGuidance.whatMissing}
+            </div>
+          </div>
+          <div className="flex flex-col justify-between">
+            <div>
+              <div className="font-bold text-slate-700 uppercase text-[10px] tracking-wider">
+                Siguiente acción
+              </div>
+              <div className="text-[#1E4E8C] font-bold mt-0.5 leading-snug">
+                {currentStepGuidance.nextAction}
+              </div>
+            </div>
+            {currentStepGuidance.nextStep !== builderStep && (
+              <button
+                type="button"
+                onClick={() => setBuilderStep(currentStepGuidance.nextStep)}
+                className="mt-2 px-2.5 py-1 rounded bg-[#1E4E8C] hover:bg-[#163A69] text-white text-[11px] font-bold inline-flex items-center justify-center gap-1 cursor-pointer transition-colors"
+              >
+                <span>Avanzar al Paso {currentStepGuidance.nextStep}</span>
+                <ArrowRight className="w-3.5 h-3.5" />
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* Fila 3: Barra de Acciones Asistidas de TOTALiA® */}
+        <div className="pt-1 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+          <div className="flex items-center gap-2">
+            <div className="w-6 h-6 rounded bg-gradient-to-br from-indigo-700 to-purple-800 text-white flex items-center justify-center shrink-0 shadow-xs">
+              <Sparkles className="w-3.5 h-3.5 text-sky-200" />
+            </div>
+            <span className="text-xs font-bold text-slate-900 flex items-center gap-1.5">
+              <span>TOTALiA® Contextual</span>
+              <HelpTooltip
+                title="Asistencia Contextual TOTALiA®"
+                description="Analiza especificaciones registradas, contratos de datos y reglas técnicas de la familia de archivo para recomendar ajustes justificados y trazables. Todas las sugerencias se aplican de forma controlada sobre un borrador."
+              />
+            </span>
+          </div>
+
+          {/* Botones de Acciones Sugeridas */}
+          <div className="flex flex-wrap items-center gap-1.5 text-xs">
+            <button
+              type="button"
+              onClick={() => openTotaliaWithAction('siguiente_paso')}
+              className="px-2.5 py-1 rounded-md bg-indigo-50 border border-indigo-200 text-indigo-900 hover:bg-indigo-100 font-semibold cursor-pointer inline-flex items-center gap-1 transition-colors"
+            >
+              <ArrowRight className="w-3.5 h-3.5 text-indigo-700" />
+              <span>Indicar siguiente paso</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => openTotaliaWithAction('revisar_estructura')}
+              className="px-2.5 py-1 rounded-md bg-blue-50 border border-blue-200 text-blue-900 hover:bg-blue-100 font-semibold cursor-pointer inline-flex items-center gap-1 transition-colors"
+            >
+              <Sliders className="w-3.5 h-3.5 text-blue-700" />
+              <span>Revisar mi estructura</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => openTotaliaWithAction('sugerir_mapeos')}
+              className="px-2.5 py-1 rounded-md bg-emerald-50 border border-emerald-200 text-emerald-900 hover:bg-emerald-100 font-semibold cursor-pointer inline-flex items-center gap-1 transition-colors"
+            >
+              <Database className="w-3.5 h-3.5 text-emerald-700" />
+              <span>Sugerir correspondencias</span>
+            </button>
+
+            {configDiagnostics.length > 0 && (
+              <button
+                type="button"
+                onClick={() => openTotaliaWithAction('explicar_error')}
+                className="px-2.5 py-1 rounded-md bg-rose-100 border border-rose-300 text-rose-950 hover:bg-rose-200 font-bold cursor-pointer inline-flex items-center gap-1 animate-pulse"
+              >
+                <AlertCircle className="w-3.5 h-3.5 text-rose-700" />
+                <span>Explicar este error ({configDiagnostics.length})</span>
+              </button>
+            )}
+
+            <button
+              type="button"
+              onClick={() => openTotaliaWithAction('ayudame_a_crear')}
+              className="px-2.5 py-1 rounded-md bg-purple-50 border border-purple-200 text-purple-900 hover:bg-purple-100 font-semibold cursor-pointer inline-flex items-center gap-1 transition-colors"
+            >
+              <Sparkles className="w-3.5 h-3.5 text-purple-700" />
+              <span>Ayúdame a crear esta salida</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => openTotaliaWithAction('evaluar_impacto')}
+              className="px-2.5 py-1 rounded-md bg-slate-100 border border-slate-200 text-slate-700 hover:bg-slate-200 font-semibold cursor-pointer inline-flex items-center gap-1 transition-colors"
+            >
+              <ShieldAlert className="w-3.5 h-3.5 text-slate-600" />
+              <span>Evaluar impacto</span>
+            </button>
+          </div>
         </div>
       </div>
 
@@ -3414,10 +4104,10 @@ export const VisualOutputBuilderView: React.FC = () => {
                 <div className="inline-flex items-center gap-1.5">
                   <button
                     type="button"
-                    disabled={blockingIssuesCount > 0}
+                    disabled={!canDownloadPhysicalArtifact}
                     onClick={handleDownloadPreviewArtifact}
                     className={`inline-flex items-center gap-2 px-4 py-2.5 rounded text-xs font-bold transition-colors ${
-                      blockingIssuesCount > 0
+                      !canDownloadPhysicalArtifact
                         ? 'bg-slate-200 text-slate-500 cursor-not-allowed'
                         : 'bg-[#1E4E8C] text-white hover:bg-[#163A69] cursor-pointer shadow-xs'
                     }`}
@@ -3425,14 +4115,28 @@ export const VisualOutputBuilderView: React.FC = () => {
                     <Download className="w-4 h-4" />
                     Generar y descargar archivo físico ({compiledResult.fileName})
                   </button>
-                  {blockingIssuesCount > 0 && (
+                  {!canDownloadPhysicalArtifact && (
                     <HelpTooltip
                       variant="disabled-reason"
                       align="right"
-                      title="Descarga bloqueada por errores o falta de lote compatible"
-                      description="El sistema no genera ni descarga archivos operativos con errores bloqueantes de estructura, longitud o cuando no existe un lote compatible para la entidad y el periodo seleccionados."
-                      disabledReason={`Existen ${blockingIssuesCount} bloqueo(s) activo(s).`}
-                      enableRequirement="Seleccione o cargue un lote compatible en el Paso 3 y corrija los errores señalados."
+                      title={
+                        structuralBlockingCount > 0
+                          ? 'Descarga bloqueada por errores en estructura'
+                          : 'Descarga bloqueada: Falta lote compatible'
+                      }
+                      description={
+                        structuralBlockingCount > 0
+                          ? 'Existen errores de estructura (longitudes, solapamientos o nombres técnicos) por corregir en el Paso 2.'
+                          : 'La estructura técnica es válida, pero no existe un lote de datos compatible para la entidad y el periodo seleccionados (Código CES-DAT-000). Vaya al Paso 3 para seleccionar un informe con lote o cargar datos.'
+                      }
+                      disabledReason={
+                        structuralBlockingCount > 0
+                          ? `Existen ${structuralBlockingCount} bloqueo(s) de estructura activo(s).`
+                          : !compiledResult.isRealExecutableGeneration
+                          ? 'No hay lote de datos compatible (CES-DAT-000).'
+                          : 'Descarga no disponible.'
+                      }
+                      enableRequirement="Seleccione o cargue un lote compatible en el Paso 3 y resuelva los bloqueos señalados."
                     />
                   )}
                 </div>
@@ -3665,29 +4369,36 @@ export const VisualOutputBuilderView: React.FC = () => {
                 </h3>
                 <span
                   className={`px-2 py-0.5 rounded text-xs font-bold ${
-                    blockingIssuesCount === 0
+                    canDownloadPhysicalArtifact
                       ? 'bg-emerald-100 text-emerald-900'
+                      : structuralBlockingCount === 0
+                      ? 'bg-amber-100 text-amber-950'
                       : 'bg-rose-100 text-rose-900'
                   }`}
                 >
-                  {blockingIssuesCount === 0
-                    ? 'Configuración válida'
-                    : `${blockingIssuesCount} error(es) por corregir`}
+                  {canDownloadPhysicalArtifact
+                    ? 'Configuración y generación válidas'
+                    : structuralBlockingCount === 0
+                    ? 'Estructura válida (Lote pendiente)'
+                    : `${totalBlockingCount} error(es) por corregir`}
                 </span>
               </div>
 
-              {configDiagnostics.length === 0 &&
-              compiledResult.findings.filter(
-                (f) => f.layer !== 'Datos del formato (DAQUE)'
-              ).length === 0 ? (
+              {canDownloadPhysicalArtifact ? (
                 isPhysicalEngineSupported ? (
                   <div className="p-3.5 rounded bg-emerald-50 border border-emerald-200 text-xs text-emerald-950 space-y-1.5">
                     <div className="font-bold flex items-center gap-1.5">
                       <CheckCircle2 className="w-4 h-4 text-emerald-700 shrink-0" />
-                      Controles superados — Archivo físico generado y disponible
+                      Controles superados — Archivo físico generado y disponible para descarga
                     </div>
                     <p>
-                      Los {draft.fields.length} campos cuentan con longitud válida, tipos consistentes y origen de datos asignado. El archivo físico{' '}
+                      Los {draft.fields.length} campos cuentan con longitud válida, tipos consistentes y lote compatible (
+                      <span className="font-semibold">
+                        {compiledResult.resolvedPrimaryBatch?.executionCode ||
+                          compiledResult.sourceExecutionSummary ||
+                          'Ejecución activa'}
+                      </span>
+                      ). El archivo físico{' '}
                       <span className="font-mono font-semibold">
                         {compiledResult.fileName}
                       </span>{' '}
@@ -3709,6 +4420,27 @@ export const VisualOutputBuilderView: React.FC = () => {
                     </p>
                   </div>
                 )
+              ) : structuralBlockingCount === 0 && !compiledResult.isRealExecutableGeneration ? (
+                <div className="p-3.5 rounded bg-amber-50 border border-amber-300 text-xs text-amber-950 space-y-2">
+                  <div className="font-bold flex items-center gap-1.5">
+                    <AlertTriangle className="w-4 h-4 text-amber-800 shrink-0" />
+                    Configuración estructural válida — Generación física en espera de lote compatible
+                  </div>
+                  <p>
+                    La estructura de los {draft.fields.length} campos, longitudes y reglas de formato es técnicamente válida y se puede guardar como borrador. Sin embargo, no se genera ni descarga el archivo físico operativo{' '}
+                    <span className="font-mono font-semibold">{compiledResult.fileName}</span> porque no hay un lote de datos compatible para la entidad{' '}
+                    <strong>{globalEntity}</strong> y el periodo <strong>{globalPeriod}</strong> (Código CES-DAT-000).
+                  </p>
+                  <div>
+                    <button
+                      type="button"
+                      onClick={() => setBuilderStep(3)}
+                      className="px-2.5 py-1 rounded bg-amber-200 hover:bg-amber-300 text-amber-950 font-bold inline-flex items-center gap-1 cursor-pointer"
+                    >
+                      Ir al Paso 3 para seleccionar informe con lote o cargar datos →
+                    </button>
+                  </div>
+                </div>
               ) : (
                 <div className="space-y-2.5 max-h-80 overflow-y-auto">
                   {configDiagnostics.map((diag) => (
@@ -3823,21 +4555,32 @@ export const VisualOutputBuilderView: React.FC = () => {
 
             {/* Right: Physical File Output Preview */}
             <div className="lg:col-span-7 bg-white border border-slate-200 rounded-md p-4 space-y-2.5">
-              <div className="flex items-center justify-between border-b border-slate-200 pb-2.5">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between border-b border-slate-200 pb-2.5 gap-2">
                 <div>
                   <h3 className="text-sm font-bold text-slate-900 flex items-center gap-1.5">
-                    <FileCode2 className="w-4 h-4 text-[#1E4E8C]" />
-                    {isPhysicalEngineSupported
-                      ? `Contenido físico generado (${compiledResult.rowsProcessed} registros · Corte ${globalPeriod})`
-                      : `Vista previa de esquema y estructura (${compiledResult.rowsProcessed} registros · Sin binario)`}
+                    <FileCode2
+                      className={`w-4 h-4 ${
+                        previewArtifactHeader.isPhysicalReady
+                          ? 'text-[#1E4E8C]'
+                          : 'text-amber-600'
+                      }`}
+                    />
+                    {previewArtifactHeader.title}
                   </h3>
                   <p className="text-[11px] text-slate-500">
-                    Archivo: <span className="font-mono">{compiledResult.fileName}</span> · {compiledResult.engineNotice}
+                    {previewArtifactHeader.subtitle}
                   </p>
                 </div>
-                <span className="font-mono text-[11px] text-slate-500 shrink-0">
-                  {selectedOutputType.family} · {draft.composition.encoding}
-                </span>
+                <div className="flex items-center gap-2 shrink-0">
+                  <span
+                    className={`px-2 py-0.5 rounded text-[10px] font-bold ${previewArtifactHeader.badgeClass}`}
+                  >
+                    {previewArtifactHeader.badgeLabel}
+                  </span>
+                  <span className="font-mono text-[11px] text-slate-500">
+                    {selectedOutputType.family} · {draft.composition.encoding}
+                  </span>
+                </div>
               </div>
 
               <pre className="p-3.5 rounded bg-slate-900 text-slate-100 font-mono text-xs overflow-x-auto leading-relaxed max-h-80">
@@ -4308,6 +5051,32 @@ export const VisualOutputBuilderView: React.FC = () => {
           </div>
         </div>
       )}
+
+      {/* MODAL DE ASISTENCIA CONTEXTUAL TOTALiA® */}
+      <TotaliaBuilderAssistantModal
+        isOpen={showTotaliaModal}
+        onClose={() => setShowTotaliaModal(false)}
+        initialAction={totaliaModalAction}
+        draft={draft}
+        selectedOutputType={selectedOutputType}
+        selectedDataContract={selectedDataContract}
+        allDataContracts={dataContracts}
+        associations={associations}
+        regulatoryFormats={regulatoryFormats}
+        normativeSources={normativeSources}
+        configuredOutputs={configuredOutputs}
+        isImmutable={isImmutable}
+        globalPeriod={globalPeriod}
+        globalEntity={globalEntity}
+        configDiagnostics={configDiagnostics}
+        onApplyFieldPatch={handleUpdateField}
+        onApplyFullFieldsUpdate={(newFields) =>
+          updateDraft((p) => ({ ...p, fields: newFields }))
+        }
+        onRequestCreateRevision={() => setShowRevisionModal(true)}
+        onGoToStep={(s) => setBuilderStep(s)}
+        notify={notify}
+      />
     </div>
   );
 };

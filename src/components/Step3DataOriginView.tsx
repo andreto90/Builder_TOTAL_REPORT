@@ -12,6 +12,7 @@ import {
   Filter,
   FolderPlus,
   GitMerge,
+  Info,
   Layers,
   Link2,
   Plus,
@@ -179,6 +180,53 @@ export const Step3DataOriginView: React.FC<Step3DataOriginViewProps> = ({
   const [selectedOriginRoute, setSelectedOriginRoute] = useState<
     'Formato generado por TÓTAL REPORT®' | 'Fuente proporcionada por el cliente'
   >(primaryContract.originRoute || 'Formato generado por TÓTAL REPORT®');
+
+  // Route A mode: 'disponibles' (Informes del sistema con datos) vs 'catalogo_referencia' (Herramienta administrativa)
+  const [routeAMode, setRouteAMode] = useState<'disponibles' | 'catalogo_referencia'>('disponibles');
+
+  // Priority: Reports that actually have structure and execution batches in TÓTAL REPORT®
+  const availableReportsWithData = useMemo(() => {
+    return catalogSourceFormats
+      .filter((entry) => {
+        if (!entry.linkedDataContractId) return false;
+        const contract = dataContracts.find((c) => c.id === entry.linkedDataContractId);
+        return Boolean(contract && contract.fields.length > 0);
+      })
+      .map((entry) => {
+        const contract = dataContracts.find((c) => c.id === entry.linkedDataContractId)!;
+        const execInfo = resolveSourceExecutionRows({
+          contract,
+          periodo: globalPeriod,
+          entidad: globalEntity,
+          sourceCatalogEntryId: entry.id,
+        });
+        const isPrimarySelected = Boolean(
+          contract.id === primaryContract.id &&
+            (activeCatalogEntry ? activeCatalogEntry.id === entry.id : true)
+        );
+        return {
+          entry,
+          contract,
+          execInfo,
+          isPrimarySelected,
+        };
+      });
+  }, [
+    catalogSourceFormats,
+    dataContracts,
+    globalPeriod,
+    globalEntity,
+    primaryContract.id,
+    activeCatalogEntry,
+  ]);
+
+  const reportsWithStructureCount = availableReportsWithData.length;
+  const reportsWithDataCount = useMemo(() => {
+    return availableReportsWithData.filter(
+      (r) => r.execInfo.hasDataBatch && r.execInfo.rows.length > 0
+    ).length;
+  }, [availableReportsWithData]);
+  const reportsWithoutDataCount = reportsWithStructureCount - reportsWithDataCount;
 
   // Route A filters (Colombia / Perú Catalog & System Formats)
   const [catCountryFilter, setCatCountryFilter] = useState<'Todos' | 'Colombia' | 'Perú'>('Todos');
@@ -1818,48 +1866,280 @@ export const Step3DataOriginView: React.FC<Step3DataOriginViewProps> = ({
           {/* CONTENIDO DE RUTA A: FORMATOS GENERADOS POR EL SISTEMA Y CATÁLOGOS COLOMBIA / PERÚ */}
           {selectedOriginRoute === 'Formato generado por TÓTAL REPORT®' && (
             <div className="bg-white rounded-xl border border-slate-200 shadow-xs p-5 space-y-4">
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <div>
-                  <h4 className="text-sm font-bold text-slate-900 flex items-center gap-2">
-                    <Database className="w-4 h-4 text-indigo-600" />
-                    Catálogo de formatos e informes del sistema (Colombia y Perú)
-                  </h4>
-                  <p className="text-xs text-slate-600 mt-0.5">
-                    En el catálogo, <strong>Organismo / Entidad reguladora</strong> identifica al ente supervisor o receptor (ej. Supersolidaria, DIAN, SFC, SBS Perú), mientras que la entidad cliente activa es{' '}
-                    <strong className="text-slate-900">{globalEntity}</strong>. Dos informes pueden compartir una estructura técnica sin convertirse en el mismo informe ni en el mismo lote.
-                  </p>
-                </div>
-
-                <div className="flex flex-wrap items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setShowImportCatalogModal(true)}
-                    className="px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer"
+              {/* Selector de modo en Ruta A: Informes con datos (Prioritario) vs Catálogo de referencia (Administrativo) */}
+              <div className="flex border-b border-slate-200 gap-2 pb-1">
+                <button
+                  type="button"
+                  onClick={() => setRouteAMode('disponibles')}
+                  className={`py-2 px-3.5 text-xs font-bold border-b-2 flex items-center gap-2 cursor-pointer transition-colors ${
+                    routeAMode === 'disponibles'
+                      ? 'border-indigo-600 text-indigo-700 bg-indigo-50/50'
+                      : 'border-transparent text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  <Database className="w-4 h-4 text-indigo-600" />
+                  Informes del sistema ({reportsWithStructureCount})
+                  <span
+                    className={`px-1.5 py-0.2 rounded text-[10px] font-bold ${
+                      reportsWithDataCount > 0
+                        ? 'bg-emerald-100 text-emerald-800'
+                        : 'bg-amber-100 text-amber-900'
+                    }`}
                   >
-                    <Upload className="w-3.5 h-3.5" />
-                    Importar catálogo (.xlsx / .csv)
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setShowCatalogAuditModal(true)}
-                    className="px-3 py-1.5 rounded-lg border border-amber-300 bg-amber-50 hover:bg-amber-100 text-amber-900 text-xs font-bold flex items-center gap-1.5 cursor-pointer"
-                  >
-                    <AlertTriangle className="w-3.5 h-3.5 text-amber-700" />
-                    Auditoría y procedencia ({catalogAudit.anomalies.length} obs.)
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setShowNewCatalogEntryModal(true)}
-                    className="px-3 py-1.5 rounded-lg border border-slate-300 bg-white hover:bg-slate-50 text-slate-800 text-xs font-semibold flex items-center gap-1.5 cursor-pointer"
-                  >
-                    <Plus className="w-3.5 h-3.5" />
-                    Registrar formato en catálogo
-                  </button>
-                </div>
+                    {reportsWithDataCount > 0
+                      ? `${reportsWithDataCount} con datos para ${globalPeriod}`
+                      : `0 con datos para ${globalPeriod}`}
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setRouteAMode('catalogo_referencia')}
+                  className={`py-2 px-3.5 text-xs font-bold border-b-2 flex items-center gap-2 cursor-pointer transition-colors ${
+                    routeAMode === 'catalogo_referencia'
+                      ? 'border-indigo-600 text-indigo-700 bg-indigo-50/50'
+                      : 'border-transparent text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  <Layers className="w-4 h-4 text-slate-500" />
+                  Catálogo normativo de referencia ({catalogSourceFormats.length} formatos)
+                  <span className="px-1.5 py-0.2 rounded text-[10px] font-bold bg-slate-100 text-slate-600">
+                    Informativo / Consultivo
+                  </span>
+                </button>
               </div>
 
-              {/* Filtros de búsqueda de Ruta A */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-2.5 bg-slate-50 p-3 rounded-xl border border-slate-200">
+              {/* VISTA 1: INFORMES DEL SISTEMA DISPONIBLES CON DATOS (PRIORITARIA) */}
+              {routeAMode === 'disponibles' && (
+                <div className="space-y-4">
+                  <div className="p-3.5 rounded-lg bg-indigo-50/70 border border-indigo-200 text-xs text-indigo-950 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+                    <div>
+                      <div className="font-bold flex items-center gap-1.5 text-slate-900">
+                        <CheckCircle2 className="w-4 h-4 text-indigo-700 shrink-0" />
+                        Informes del sistema: {reportsWithStructureCount} con estructura disponible · {reportsWithDataCount} con datos para este periodo
+                      </div>
+                      <p className="mt-0.5 text-slate-700">
+                        Todos los {reportsWithStructureCount} informes cuentan con estructura técnica de campos disponible para diseñar y mapear la salida. Para generar el archivo físico operativo se requiere un lote con registros compatibles para <strong>{globalEntity}</strong> y el periodo <strong>{globalPeriod}</strong>.{' '}
+                        {reportsWithDataCount === 0 && (
+                          <span className="font-semibold text-amber-900">
+                            Actualmente ningún informe tiene lote cargado en {globalPeriod}; las estructuras están 100% disponibles para diseñar el formato y cargar los datos después.
+                          </span>
+                        )}
+                      </p>
+                    </div>
+                    <span
+                      className={`text-[11px] font-semibold px-2.5 py-1 rounded border shrink-0 ${
+                        reportsWithDataCount > 0
+                          ? 'text-emerald-800 bg-emerald-50 border-emerald-300'
+                          : 'text-amber-900 bg-amber-50 border-amber-300'
+                      }`}
+                    >
+                      {reportsWithDataCount > 0
+                        ? `${reportsWithDataCount} informe(s) con datos listos para generar`
+                        : `0 con datos · ${reportsWithStructureCount} con estructura para diseñar`}
+                    </span>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
+                    {availableReportsWithData.map(
+                      ({ entry, contract, execInfo, isPrimarySelected }) => (
+                        <div
+                          key={entry.id}
+                          className={`p-4 rounded-xl border-2 transition-all flex flex-col justify-between ${
+                            isPrimarySelected
+                              ? 'border-indigo-600 bg-indigo-50/40 shadow-xs'
+                              : 'border-slate-200 bg-white hover:border-slate-300'
+                          }`}
+                        >
+                          <div className="space-y-2">
+                            <div className="flex items-start justify-between gap-2">
+                              <div className="flex items-center gap-1.5">
+                                <span
+                                  className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
+                                    entry.country === 'Colombia'
+                                      ? 'bg-amber-100 text-amber-900'
+                                      : 'bg-rose-100 text-rose-900'
+                                  }`}
+                                >
+                                  {entry.country}
+                                </span>
+                                <span className="text-xs font-bold text-slate-800">
+                                  {entry.regulatorOrOrganism}
+                                </span>
+                              </div>
+                              <span
+                                className={`px-2 py-0.5 rounded text-[10px] font-bold font-mono ${
+                                  isPrimarySelected
+                                    ? 'bg-indigo-600 text-white'
+                                    : 'bg-slate-100 text-slate-700'
+                                }`}
+                              >
+                                {entry.formatCode
+                                  ? `Cód. ${entry.formatCode}`
+                                  : entry.internalNumberPeru || contract.code}
+                              </span>
+                            </div>
+
+                            <div>
+                              <h5 className="text-sm font-bold text-slate-900">
+                                {entry.reportName}
+                              </h5>
+                              <p className="text-[11px] text-slate-500 mt-0.5">
+                                {entry.originEvidenceNote || `Estructura base: ${contract.name}`}
+                              </p>
+                            </div>
+
+                            <div className="p-2.5 rounded bg-slate-50 border border-slate-200 space-y-1.5 text-[11px]">
+                              <div className="flex items-center justify-between">
+                                <span className="text-slate-600">Campos en estructura:</span>
+                                <span className="font-bold text-slate-900">
+                                  {contract.fields.length} campos
+                                </span>
+                              </div>
+                              <div
+                                className="text-[10px] font-mono text-slate-500 truncate"
+                                title={contract.fields.map((f) => f.name).join(', ')}
+                              >
+                                {contract.fields.slice(0, 4).map((f) => f.name).join(', ')}...
+                              </div>
+                              <div className="pt-1 border-t border-slate-200 flex items-center justify-between">
+                                <span className="text-slate-600">Lote para {globalPeriod}:</span>
+                                <span
+                                  className={`font-bold ${
+                                    execInfo.hasDataBatch ? 'text-emerald-700' : 'text-amber-800'
+                                  }`}
+                                >
+                                  {execInfo.hasDataBatch
+                                    ? `✓ ${execInfo.rows.length} registros (${execInfo.resolvedBatch?.executionCode})`
+                                    : 'Sin lote en este periodo (Estructura lista)'}
+                                </span>
+                              </div>
+                              {!execInfo.hasDataBatch && (
+                                <div className="text-[10px] text-amber-900 bg-amber-50 border border-amber-200/80 rounded px-2 py-1">
+                                  Estructura disponible para mapear y diseñar. Para generar archivo físico, cargue un lote en la pestaña inferior.
+                                </div>
+                              )}
+                            </div>
+                          </div>
+
+                          <div className="mt-3.5 pt-3 border-t border-slate-200/80 flex flex-wrap items-center justify-between gap-2">
+                            {isPrimarySelected ? (
+                              <div className="flex flex-wrap items-center gap-1.5 w-full">
+                                <span className="px-2 py-1 rounded bg-indigo-600 text-white text-[11px] font-bold inline-flex items-center gap-1">
+                                  <CheckCircle2 className="w-3.5 h-3.5" />
+                                  Origen seleccionado
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={() => setActiveSubstage('2-estructura')}
+                                  className="px-2.5 py-1 rounded border border-indigo-300 bg-white hover:bg-indigo-50 text-indigo-700 text-[11px] font-bold cursor-pointer"
+                                >
+                                  Ver estructura
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setActiveSubstage('3-datos')}
+                                  className="px-2.5 py-1 rounded border border-indigo-300 bg-white hover:bg-indigo-50 text-indigo-700 text-[11px] font-bold cursor-pointer"
+                                >
+                                  {execInfo.hasDataBatch
+                                    ? `Ver datos (${execInfo.rows.length})`
+                                    : 'Ver datos (0 reg.)'}
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setActiveSubstage('4-mapeo')}
+                                  className="px-2.5 py-1 rounded bg-indigo-700 hover:bg-indigo-800 text-white text-[11px] font-bold cursor-pointer"
+                                >
+                                  Mapear campos →
+                                </button>
+                              </div>
+                            ) : (
+                              <div className="flex items-center justify-between gap-2 w-full">
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    handleSelectPrimaryContract(contract, entry.id);
+                                    setActiveSubstage('2-estructura');
+                                  }}
+                                  className="text-slate-600 hover:text-slate-900 text-xs font-semibold cursor-pointer"
+                                >
+                                  Consultar estructura
+                                </button>
+                                <button
+                                  type="button"
+                                  disabled={isImmutable}
+                                  onClick={() => handleSelectPrimaryContract(contract, entry.id)}
+                                  className="px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold flex items-center gap-1 cursor-pointer disabled:opacity-40"
+                                >
+                                  Seleccionar como Origen
+                                  <ArrowRight className="w-3.5 h-3.5" />
+                                </button>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      )
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* VISTA 2: CATÁLOGO NORMATIVO DE REFERENCIA (ADMINISTRATIVO / CONSULTIVO) */}
+              {routeAMode === 'catalogo_referencia' && (
+                <div className="space-y-4">
+                  <div className="p-3 rounded-lg bg-slate-50 border border-slate-200 text-xs text-slate-700 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                    <div className="flex items-start gap-2">
+                      <Info className="w-4 h-4 text-slate-500 shrink-0 mt-0.5" />
+                      <div>
+                        <strong>Referencia normativa informativa:</strong> Este catálogo compila los formatos establecidos por los reguladores de Colombia y Perú. Es una referencia consultiva sobre los formatos que pueden existir.{' '}
+                        <strong>
+                          No es obligatorio importarlo íntegramente ni usarlo como datos para alimentar una salida.
+                        </strong>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div>
+                      <h4 className="text-sm font-bold text-slate-900 flex items-center gap-2">
+                        <Database className="w-4 h-4 text-indigo-600" />
+                        Catálogo de formatos e informes del sistema (Colombia y Perú)
+                      </h4>
+                      <p className="text-xs text-slate-600 mt-0.5">
+                        En el catálogo, <strong>Organismo / Entidad reguladora</strong> identifica al ente supervisor o receptor (ej. Supersolidaria, DIAN, SFC, SBS Perú), mientras que la entidad cliente activa es{' '}
+                        <strong className="text-slate-900">{globalEntity}</strong>. Dos informes pueden compartir una estructura técnica sin convertirse en el mismo informe ni en el mismo lote.
+                      </p>
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setShowImportCatalogModal(true)}
+                        className="px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer"
+                      >
+                        <Upload className="w-3.5 h-3.5" />
+                        Importar catálogo (.xlsx / .csv)
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setShowCatalogAuditModal(true)}
+                        className="px-3 py-1.5 rounded-lg border border-amber-300 bg-amber-50 hover:bg-amber-100 text-amber-900 text-xs font-bold flex items-center gap-1.5 cursor-pointer"
+                      >
+                        <AlertTriangle className="w-3.5 h-3.5 text-amber-700" />
+                        Auditoría y procedencia ({catalogAudit.anomalies.length} obs.)
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setShowNewCatalogEntryModal(true)}
+                        className="px-3 py-1.5 rounded-lg border border-slate-300 bg-white hover:bg-slate-50 text-slate-800 text-xs font-semibold flex items-center gap-1.5 cursor-pointer"
+                      >
+                        <Plus className="w-3.5 h-3.5" />
+                        Registrar formato en catálogo
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Filtros de búsqueda de Ruta A */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-2.5 bg-slate-50 p-3 rounded-xl border border-slate-200">
                 <div>
                   <label className="block text-[11px] font-bold text-slate-700 mb-1">
                     País / Jurisdicción
@@ -2250,6 +2530,8 @@ export const Step3DataOriginView: React.FC<Step3DataOriginViewProps> = ({
               </div>
             </div>
           )}
+        </div>
+      )}
 
           {/* CONTENIDO DE RUTA B: FUENTES PROPORCIONADAS POR EL CLIENTE (4 ACCIONES DIFERENCIADAS) */}
           {selectedOriginRoute === 'Fuente proporcionada por el cliente' && (
