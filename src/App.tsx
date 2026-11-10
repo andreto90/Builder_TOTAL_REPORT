@@ -3,17 +3,19 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React from 'react';
+import React, { useState } from 'react';
 import {
   AlertCircle,
-  BookOpen,
   CheckCircle2,
+  ChevronLeft,
+  ChevronRight,
   Database,
-  FileSpreadsheet,
   GitBranch,
   Info,
   LayoutGrid,
   Link2,
+  PanelLeftClose,
+  PanelLeftOpen,
   ShieldCheck,
   Sliders,
   Terminal,
@@ -25,7 +27,6 @@ import {
   useConfigurator,
 } from './context/ConfiguratorContext';
 import { UserRole } from './domain/types';
-import { UserManualModal } from './components/UserManualModal';
 import { DashboardCatalogView } from './components/DashboardCatalogView';
 import { OutputTypesCatalogView } from './components/OutputTypesCatalogView';
 import { VisualOutputBuilderView } from './components/VisualOutputBuilderView';
@@ -35,6 +36,9 @@ import { TotaliaAssistantView } from './components/TotaliaAssistantView';
 import { ExecutionSimulatorView } from './components/ExecutionSimulatorView';
 import { HelpTooltip } from './components/HelpTooltip';
 import { getCutoffDateForPeriod } from './domain/engine';
+
+const DRIVE_LOGO_FALLBACK_URL =
+  'https://lh3.googleusercontent.com/d/1J9Vz7xITde6OJueH7t3h4GMC6Kii8GWm';
 
 const NAV_ITEMS: {
   id: ActiveModuleView;
@@ -106,6 +110,26 @@ const EnterpriseWorkspaceShell: React.FC = () => {
     configuredOutputs,
   } = useConfigurator();
 
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('total_report_sidebar_collapsed') === 'true';
+    } catch {
+      return false;
+    }
+  });
+
+  const toggleSidebar = () => {
+    setIsSidebarCollapsed((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem('total_report_sidebar_collapsed', String(next));
+      } catch {
+        // ignore storage errors
+      }
+      return next;
+    });
+  };
+
   const pendingSuggestionsCount = totaliaSuggestions.filter(
     (s) => s.status === 'Pendiente de revisión'
   ).length;
@@ -114,14 +138,36 @@ const EnterpriseWorkspaceShell: React.FC = () => {
   ).length;
 
   return (
-    <div className="min-h-screen flex flex-col bg-[#F8FAFC] text-[#0F172A]">
+    <div className="min-h-screen md:h-screen md:overflow-hidden flex flex-col bg-[#F8FAFC] text-[#0F172A]">
       {/* Top Corporate Header */}
-      <header className="bg-[#0F1F38] text-white border-b border-slate-800 px-4 py-2.5 flex flex-wrap items-center justify-between gap-3 sticky top-0 z-40">
+      <header className="bg-[#0F1F38] text-white border-b border-slate-800 px-4 py-2 flex flex-wrap items-center justify-between gap-3 shrink-0 z-40">
         <div className="flex items-center gap-3">
+          <button
+            type="button"
+            onClick={toggleSidebar}
+            title={isSidebarCollapsed ? 'Expandir panel izquierdo' : 'Contraer panel izquierdo'}
+            aria-label={isSidebarCollapsed ? 'Expandir panel izquierdo' : 'Contraer panel izquierdo'}
+            className="hidden md:flex items-center justify-center w-8 h-8 rounded bg-[#172B4D] hover:bg-[#1E4E8C] border border-slate-700 text-slate-200 hover:text-white transition-colors cursor-pointer shrink-0"
+          >
+            {isSidebarCollapsed ? (
+              <PanelLeftOpen className="w-4 h-4" />
+            ) : (
+              <PanelLeftClose className="w-4 h-4" />
+            )}
+          </button>
+
           <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded bg-[#1E4E8C] border border-blue-400/40 flex items-center justify-center font-bold text-xs tracking-tight">
-              TR
-            </div>
+            <img
+              src="/logo-total-report.png"
+              onError={(e) => {
+                const target = e.currentTarget;
+                if (target.src !== DRIVE_LOGO_FALLBACK_URL) {
+                  target.src = DRIVE_LOGO_FALLBACK_URL;
+                }
+              }}
+              alt="Logo TÓTAL REPORT®"
+              className="w-10 h-10 object-contain shrink-0 drop-shadow-xs"
+            />
             <div>
               <div className="flex items-center gap-2">
                 <span className="font-bold text-sm tracking-tight">TÓTAL REPORT®</span>
@@ -270,14 +316,43 @@ const EnterpriseWorkspaceShell: React.FC = () => {
         </div>
       </header>
 
-      {/* Main Layout Container: Left Sidebar + Right Content Area */}
-      <div className="flex-1 flex flex-col md:flex-row">
+      {/* Main Layout Container: Static/Collapsible Left Sidebar + Scrollable Right Content Area */}
+      <div className="flex-1 flex flex-col md:flex-row md:min-h-0 md:overflow-hidden">
         {/* Left Navigation Sidebar */}
-        <aside className="w-full md:w-64 bg-[#12233D] text-slate-200 shrink-0 flex flex-col justify-between border-r border-slate-800">
-          <div className="p-3">
-            <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400 px-2.5 py-1.5">
-              Módulos Principales
+        <aside
+          className={`w-full ${
+            isSidebarCollapsed ? 'md:w-16' : 'md:w-64'
+          } bg-[#12233D] text-slate-200 shrink-0 flex flex-col justify-between border-r border-slate-800 md:h-full md:overflow-y-auto transition-all duration-200 select-none`}
+        >
+          <div className="p-2.5">
+            <div
+              className={`flex items-center ${
+                isSidebarCollapsed ? 'justify-center' : 'justify-between'
+              } px-1.5 py-1.5`}
+            >
+              {!isSidebarCollapsed && (
+                <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                  Módulos Principales
+                </div>
+              )}
+              <button
+                type="button"
+                onClick={toggleSidebar}
+                title={isSidebarCollapsed ? 'Expandir menú lateral' : 'Colapsar menú lateral'}
+                aria-label={isSidebarCollapsed ? 'Expandir menú lateral' : 'Colapsar menú lateral'}
+                className="hidden md:flex items-center gap-1 px-1.5 py-1 rounded text-[10px] font-semibold text-slate-300 hover:text-white hover:bg-[#193052] transition-colors cursor-pointer"
+              >
+                {isSidebarCollapsed ? (
+                  <ChevronRight className="w-4 h-4" />
+                ) : (
+                  <>
+                    <span>Colapsar</span>
+                    <ChevronLeft className="w-3.5 h-3.5" />
+                  </>
+                )}
+              </button>
             </div>
+
             <nav className="space-y-1 mt-1" aria-label="Módulos del Configurador">
               {NAV_ITEMS.map((item) => {
                 const Icon = item.icon;
@@ -295,84 +370,121 @@ const EnterpriseWorkspaceShell: React.FC = () => {
                     key={item.id}
                     type="button"
                     onClick={() => setActiveModule(item.id)}
-                    className={`w-full text-left px-2.5 py-2.5 rounded transition-colors flex items-start gap-2.5 cursor-pointer ${
+                    title={
+                      isSidebarCollapsed
+                        ? `${item.stepNumber}. ${item.label} — ${item.shortDesc}`
+                        : undefined
+                    }
+                    className={`w-full rounded transition-colors flex ${
+                      isSidebarCollapsed
+                        ? 'flex-col items-center justify-center px-1.5 py-2.5 gap-1 relative'
+                        : 'text-left px-2.5 py-2.5 items-start gap-2.5'
+                    } cursor-pointer ${
                       isActive
                         ? 'bg-[#1E4E8C] text-white font-semibold shadow-xs'
                         : 'text-slate-300 hover:bg-[#193052] hover:text-white'
                     }`}
                   >
                     <Icon className="w-4 h-4 shrink-0 mt-0.5" />
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center justify-between gap-1">
-                        <span className="text-xs leading-tight">
-                          {item.stepNumber}. {item.label}
+                    {isSidebarCollapsed ? (
+                      <>
+                        <span className="text-[10px] font-mono font-bold leading-none">
+                          {item.stepNumber}
                         </span>
                         {badgeVal && (
                           <span
                             title="Elementos pendientes de revisión o sugerencias TOTALiA®"
-                            className="px-1.5 py-0.5 rounded text-[10px] font-mono font-bold bg-amber-400 text-slate-950 tabular-nums shrink-0"
+                            className="absolute top-1 right-1 px-1 py-0.2 rounded-full text-[9px] font-mono font-bold bg-amber-400 text-slate-950 tabular-nums"
                           >
                             {badgeVal}
                           </span>
                         )}
+                      </>
+                    ) : (
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center justify-between gap-1">
+                          <span className="text-xs leading-tight">
+                            {item.stepNumber}. {item.label}
+                          </span>
+                          {badgeVal && (
+                            <span
+                              title="Elementos pendientes de revisión o sugerencias TOTALiA®"
+                              className="px-1.5 py-0.5 rounded text-[10px] font-mono font-bold bg-amber-400 text-slate-950 tabular-nums shrink-0"
+                            >
+                              {badgeVal}
+                            </span>
+                          )}
+                        </div>
+                        <div
+                          className={`text-[11px] leading-snug mt-0.5 ${
+                            isActive ? 'text-blue-100' : 'text-slate-400'
+                          }`}
+                        >
+                          {item.shortDesc}
+                        </div>
                       </div>
-                      <div
-                        className={`text-[11px] leading-snug mt-0.5 ${
-                          isActive ? 'text-blue-100' : 'text-slate-400'
-                        }`}
-                      >
-                        {item.shortDesc}
-                      </div>
-                    </div>
+                    )}
                   </button>
                 );
               })}
             </nav>
-
-            {/* Quick User Workflow Guide */}
-            <div className="mt-5 p-3 rounded bg-[#0F1F38] border border-slate-700/80 text-[11px] space-y-1.5">
-              <div className="font-bold text-blue-200 uppercase text-[10px] tracking-wider">
-                Flujo de trabajo recomendado
-              </div>
-              <ol className="space-y-1.5 text-slate-300 text-[11px] list-decimal list-inside">
-                <li>
-                  En <strong className="text-white">A. Salidas configuradas</strong>, pulse{' '}
-                  <span className="text-blue-200 font-semibold">Crear nueva salida</span> o seleccione una existente.
-                </li>
-                <li>
-                  En <strong className="text-white">C. Diseñador de salidas</strong> (7 pasos), defina estructura, origen de datos, validaciones y entrega.
-                </li>
-                <li>
-                  En <strong className="text-white">D. Formatos y asociaciones</strong>, vincule la versión publicada a uno o varios reportes sin duplicarla.
-                </li>
-                <li>
-                  En <strong className="text-white">F. Pruebas y generación</strong>, ejecute la validación completa y descargue el archivo cuando aplique.
-                </li>
-              </ol>
-            </div>
           </div>
 
           {/* Sidebar Footer */}
           <div className="p-3 border-t border-slate-800 bg-[#0C182B] text-[11px]">
-            <div className="flex items-center justify-between gap-1">
-              <div className="flex items-center gap-2 font-semibold text-white">
-                <FileSpreadsheet className="w-4 h-4 text-blue-400 shrink-0" />
-                <span>TÓTAL REPORT®</span>
+            {isSidebarCollapsed ? (
+              <div className="flex flex-col items-center gap-1.5">
+                <img
+                  src="/logo-total-report.png"
+                  onError={(e) => {
+                    const target = e.currentTarget;
+                    if (target.src !== DRIVE_LOGO_FALLBACK_URL) {
+                      target.src = DRIVE_LOGO_FALLBACK_URL;
+                    }
+                  }}
+                  alt="TÓTAL REPORT®"
+                  title={`TÓTAL REPORT® · Guardado en navegador: ${lastSavedAt}`}
+                  className="w-6 h-6 object-contain"
+                />
+                <HelpTooltip
+                  align="left"
+                  title="Persistencia local en navegador"
+                  description="Todos los cambios realizados en salidas, revisiones, asociaciones y corridas se guardan automáticamente en el almacenamiento local del navegador (localStorage). Desde la pantalla A puede exportar un respaldo JSON o restaurar los datos iniciales de demostración."
+                />
               </div>
-              <HelpTooltip
-                align="left"
-                title="Persistencia local en navegador"
-                description="Todos los cambios realizados en salidas, revisiones, asociaciones y corridas se guardan automáticamente en el almacenamiento local del navegador (localStorage). Desde la pantalla A puede exportar un respaldo JSON o restaurar los datos iniciales de demostración."
-              />
-            </div>
-            <div className="text-[10px] text-emerald-300 font-mono mt-1">
-              Guardado en navegador: {lastSavedAt}
-            </div>
+            ) : (
+              <>
+                <div className="flex items-center justify-between gap-1">
+                  <div className="flex items-center gap-2 font-semibold text-white">
+                    <img
+                      src="/logo-total-report.png"
+                      onError={(e) => {
+                        const target = e.currentTarget;
+                        if (target.src !== DRIVE_LOGO_FALLBACK_URL) {
+                          target.src = DRIVE_LOGO_FALLBACK_URL;
+                        }
+                      }}
+                      alt="TÓTAL REPORT®"
+                      className="w-5 h-5 object-contain shrink-0"
+                    />
+                    <span>TÓTAL REPORT®</span>
+                  </div>
+                  <HelpTooltip
+                    align="left"
+                    title="Persistencia local en navegador"
+                    description="Todos los cambios realizados en salidas, revisiones, asociaciones y corridas se guardan automáticamente en el almacenamiento local del navegador (localStorage). Desde la pantalla A puede exportar un respaldo JSON o restaurar los datos iniciales de demostración."
+                  />
+                </div>
+                <div className="text-[10px] text-emerald-300 font-mono mt-1">
+                  Guardado en navegador: {lastSavedAt}
+                </div>
+              </>
+            )}
           </div>
         </aside>
 
         {/* Main Content Area */}
-        <main className="flex-1 min-w-0 p-4 lg:p-6 space-y-4 overflow-y-auto">
+        <main className="flex-1 min-w-0 md:h-full p-4 lg:p-6 space-y-4 overflow-y-auto">
           {/* Notification Banner */}
           {bannerMessage && (
             <div

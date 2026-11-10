@@ -477,8 +477,8 @@ export const DashboardCatalogView: React.FC = () => {
   return (
     <div className="space-y-5">
       {/* Main Header with Primary Call-To-Action */}
-      <div className="bg-white border border-slate-200 rounded-md p-5 flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
-        <div>
+      <div className="bg-white border border-slate-200 rounded-md p-5 flex flex-col xl:flex-row xl:items-center xl:justify-between gap-4">
+        <div className="min-w-0">
           <span className="text-xs font-semibold uppercase tracking-wider text-[#1E4E8C]">
             A. Salidas configuradas · Pantalla Principal
           </span>
@@ -494,7 +494,7 @@ export const DashboardCatalogView: React.FC = () => {
           </p>
         </div>
 
-        <div className="flex flex-wrap items-center gap-2 shrink-0">
+        <div className="flex flex-wrap items-center xl:justify-end gap-2">
           <button
             type="button"
             onClick={handleExportJson}
