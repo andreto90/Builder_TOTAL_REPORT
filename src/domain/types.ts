@@ -477,18 +477,121 @@ export interface DaqueFormatProfile {
   lastEvaluatedSnapshot: string;
 }
 
-export interface RegulatoryFormat {
+export interface EntityTypeDefinition {
   id: string;
   code: string;
   name: string;
+  country: 'Colombia' | 'Perú';
+  description: string;
+  regulatorMain: string;
+}
+
+export interface ReceivingOrganismDefinition {
+  id: string;
+  code: string;
+  name: string;
+  shortName: string;
+  country: 'Colombia' | 'Perú';
+  description: string;
+  officialUrl: string;
+  referenceUrls: string[];
+  consultationDate: string;
+  isSystemDefault?: boolean;
+}
+
+export type FormatLifecycleStatus =
+  | 'Borrador'
+  | 'Pendiente de validación'
+  | 'Activo'
+  | 'Inactivo';
+
+export interface FormatVersionEntry {
+  versionLabel: string;
+  validFrom: string;
+  validTo: string;
+  periodicity: string;
+  applicableEntityTypes: string[];
+  supportedFamilies: TechnicalFamily[];
+  changedAt: string;
+  changedBy: string;
+  changeKind:
+    | 'Creación inicial'
+    | 'Corrección descriptiva'
+    | 'Nueva versión de especificación'
+    | 'Cambio de estado';
+  changeSummary: string;
+}
+
+export interface RegulatoryFormat {
+  id: string;
+  code: string; // Código oficial (puede ser vacío si el reporte se identifica por nombre o anexo)
+  internalCode?: string; // Identificador interno estable separado del código oficial
+  name: string;
   jurisdiction: 'Colombia' | 'Perú';
-  regulator: string;
+  country?: 'Colombia' | 'Perú';
+  regulator: string; // Organismo receptor (ej. SFC, DIAN, Fogafín, UIAF, SBS Perú)
+  issuingOrganism?: string; // Organismo emisor de la instrucción técnica cuando difiere del receptor (ej. SFC para anexos SIREL recibidos por UIAF)
   obligation: string;
-  periodicity: 'Mensual' | 'Trimestral' | 'Anual' | 'Diaria';
+  periodicity: 'Mensual' | 'Trimestral' | 'Anual' | 'Diaria' | 'Por evento' | string;
+  reportingModality?: 'Periódico' | 'Por evento';
   normativeVersion: string;
   daqueProfileId: string;
   enabledTransmissionTypes: string[];
   description: string;
+
+  // Attributes for country, organism, and entity type filtering, fidelity, and lifecycle administration
+  internalNumberPeru?: string;
+  annexOrFormLabelPeru?: string;
+  applicableEntityTypes: string[]; // List of entity type names/codes. Empty array means NOT YET CLASSIFIED
+  additionalApplicabilityConditions?: string;
+  classificationStatus:
+    | 'Clasificado y validado'
+    | 'Pendiente de clasificación'
+    | 'Con observaciones de aplicabilidad';
+  classificationNotes?: string;
+  classificationValidatedBy?: string;
+  classificationValidatedAt?: string;
+  lifecycleStatus?: FormatLifecycleStatus;
+  deactivatedAt?: string;
+  deactivationReason?: string;
+  normativeAvailability:
+    | 'Vigente'
+    | 'Por entrar en vigencia'
+    | 'Histórico / En revisión'
+    | 'Pendiente de especificación';
+  specificationValidity?: {
+    validFrom: string;
+    validTo: string;
+    versionLabel: string;
+  };
+  technicalReadinessStatus:
+    | 'Especificación técnica completa'
+    | 'Especificación parcial'
+    | 'Pendiente de especificación técnica';
+  supportedFamilies?: TechnicalFamily[];
+  documentedRequirements?: string[];
+  provenanceKind?:
+    | 'Oficial'
+    | 'Aportado por el cliente'
+    | 'Referencia interna'
+    | 'Referencia contrastada de catálogo (Excel / Imagen)'
+    | 'Ficha sintética de demostración'
+    | 'Registro administrativo validado';
+  provenanceRef?: string;
+  sourceUrl?: string;
+  consultationDate?: string;
+  verificationLevel?:
+    | 'Oficial contrastado'
+    | 'Referencia de catálogo (Excel / Imagen)'
+    | 'Aportado por el cliente'
+    | 'Referencia interna';
+  supportDocument?: {
+    fileName: string;
+    uploadedAt: string;
+    summary: string;
+  };
+  versionHistory?: FormatVersionEntry[];
+  rawOriginalValues?: Record<string, string | undefined>;
 }
 
 export interface TransmissionType {
@@ -526,6 +629,7 @@ export interface FormatOutputAssociation {
   deliveryChannelId: string;
   daqueProfileId: string;
   entityScope: string;
+  entityTypeScope?: string; // Categoría institucional de la entidad (ej. Establecimientos Bancarios)
   environment: 'QA' | 'Producción';
   validFrom: string;
   validTo: string; // 'Abierta' or YYYY-MM-DD

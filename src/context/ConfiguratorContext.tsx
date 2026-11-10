@@ -5,12 +5,16 @@ import {
   DaqueFormatProfile,
   DataContract,
   DeliveryChannel,
+  EntityTypeDefinition,
   EnvironmentDeploymentState,
   ExecutionRun,
+  FormatLifecycleStatus,
   FormatOutputAssociation,
+  FormatVersionEntry,
   LifecycleStatus,
   NormativeSourceDoc,
   OutputType,
+  ReceivingOrganismDefinition,
   RegulatoryFormat,
   SourceExecutionBatch,
   StructureField,
@@ -19,6 +23,7 @@ import {
   UserRole,
 } from '../domain/types';
 import {
+  ENTITY_TYPES_CATALOG,
   INITIAL_ASSOCIATIONS,
   INITIAL_CATALOG_SOURCE_FORMATS,
   INITIAL_CONFIGURED_OUTPUTS,
@@ -29,11 +34,16 @@ import {
   INITIAL_EXECUTION_RUNS,
   INITIAL_NORMATIVE_SOURCES,
   INITIAL_OUTPUT_TYPES,
+  INITIAL_RECEIVING_ORGANISMS,
   INITIAL_REGULATORY_FORMATS,
   INITIAL_TOTALIA_SUGGESTIONS,
   INITIAL_TRANSMISSION_TYPES,
 } from '../domain/seedData';
-import { analyzeSourceStructureUpdateImpact, generateOutputArtifact } from '../domain/engine';
+import {
+  analyzeSourceStructureUpdateImpact,
+  evaluateFormatDependencies,
+  generateOutputArtifact,
+} from '../domain/engine';
 
 export type ActiveModuleView =
   | 'dashboard'
@@ -96,6 +106,8 @@ interface ConfiguratorContextValue {
   catalogSourceFormats: CatalogSourceFormatEntry[];
   daqueProfiles: DaqueFormatProfile[];
   regulatoryFormats: RegulatoryFormat[];
+  receivingOrganisms: ReceivingOrganismDefinition[];
+  entityTypes: EntityTypeDefinition[];
   transmissionTypes: TransmissionType[];
   deliveryChannels: DeliveryChannel[];
   associations: FormatOutputAssociation[];
@@ -111,6 +123,26 @@ interface ConfiguratorContextValue {
 
   // Actions — Output Types
   saveOutputType: (typeItem: OutputType) => void;
+
+  // Actions — Regulatory Formats, Receiving Organisms & Entity Types
+  addReceivingOrganism: (org: ReceivingOrganismDefinition) => void;
+  createRegulatoryFormat: (format: RegulatoryFormat) => void;
+  updateRegulatoryFormat: (updated: RegulatoryFormat) => void;
+  editRegulatoryFormat: (
+    updated: RegulatoryFormat,
+    createNewVersion: boolean,
+    changeSummary: string
+  ) => void;
+  deleteRegulatoryFormat: (formatId: string) => { deleted: boolean; reason: string };
+  toggleFormatLifecycleStatus: (
+    formatId: string,
+    nextStatus: FormatLifecycleStatus,
+    reason: string
+  ) => void;
+  openAssociationForFormat: (formatId: string, preselectedOutputId?: string) => void;
+  preselectedAssocFormatId: string | null;
+  setPreselectedAssocFormatId: (id: string | null) => void;
+  createNewOutputForFormat: (format: RegulatoryFormat) => ConfiguredOutput;
 
   // Actions — Data Sources, Structures & Execution Batches (Paso 3)
   saveDataContract: (contract: DataContract, propagateImpactToOutputId?: string) => void;
@@ -137,6 +169,7 @@ interface ConfiguratorContextValue {
   // Actions — Associations
   saveAssociation: (assoc: FormatOutputAssociation) => void;
   deleteAssociation: (assocId: string) => void;
+  unlinkAssociation: (assocId: string, reason?: string) => void;
   adoptOutputVersionInAssociation: (assocId: string, newVersion: string) => void;
 
   // Actions — Environment Distribution & Activation
@@ -177,6 +210,7 @@ export const ConfiguratorProvider: React.FC<{ children: React.ReactNode }> = ({ 
   const [activeModuleState, setActiveModuleState] = useState<ActiveModuleView>('dashboard');
   const [selectedOutputId, setSelectedOutputId] = useState<string>('OUT-CSV-DEMO-A');
   const [preselectedAssocOutputId, setPreselectedAssocOutputId] = useState<string | null>(null);
+  const [preselectedAssocFormatId, setPreselectedAssocFormatId] = useState<string | null>(null);
   const [activeBuilderStep, setActiveBuilderStep] = useState<number>(1);
   const [globalPeriod, setGlobalPeriod] = useState<string>('2026-11');
   const [globalEnvironment, setGlobalEnvironment] = useState<'QA' | 'Producción'>('QA');
@@ -191,7 +225,11 @@ export const ConfiguratorProvider: React.FC<{ children: React.ReactNode }> = ({ 
     INITIAL_CATALOG_SOURCE_FORMATS
   );
   const [daqueProfiles] = useState<DaqueFormatProfile[]>(INITIAL_DAQUE_PROFILES);
-  const [regulatoryFormats] = useState<RegulatoryFormat[]>(INITIAL_REGULATORY_FORMATS);
+  const [regulatoryFormats, setRegulatoryFormats] = useState<RegulatoryFormat[]>(INITIAL_REGULATORY_FORMATS);
+  const [receivingOrganisms, setReceivingOrganisms] = useState<ReceivingOrganismDefinition[]>(
+    INITIAL_RECEIVING_ORGANISMS
+  );
+  const [entityTypes] = useState<EntityTypeDefinition[]>(ENTITY_TYPES_CATALOG);
   const [transmissionTypes] = useState<TransmissionType[]>(INITIAL_TRANSMISSION_TYPES);
   const [deliveryChannels] = useState<DeliveryChannel[]>(INITIAL_DELIVERY_CHANNELS);
   const [associations, setAssociations] = useState<FormatOutputAssociation[]>(INITIAL_ASSOCIATIONS);
@@ -305,6 +343,39 @@ export const ConfiguratorProvider: React.FC<{ children: React.ReactNode }> = ({ 
         }
         if (parsed.associations) setAssociations(parsed.associations);
         if (parsed.environmentDeployments) setEnvironmentDeployments(parsed.environmentDeployments);
+        if (parsed.regulatoryFormats && Array.isArray(parsed.regulatoryFormats)) {
+          const seedMap = new Map(INITIAL_REGULATORY_FORMATS.map((f) => [f.id, f]));
+          const merged = parsed.regulatoryFormats.map((f: RegulatoryFormat) => {
+            const seed = seedMap.get(f.id);
+            if (!seed) return f;
+            return {
+              ...seed,
+              ...f,
+              applicableEntityTypes: f.applicableEntityTypes !== undefined ? f.applicableEntityTypes : seed.applicableEntityTypes,
+              classificationStatus: f.classificationStatus || seed.classificationStatus,
+              internalCode: f.internalCode || seed.internalCode,
+              sourceUrl: f.sourceUrl || seed.sourceUrl,
+              consultationDate: f.consultationDate || seed.consultationDate,
+              verificationLevel: f.verificationLevel || seed.verificationLevel,
+              lifecycleStatus: f.lifecycleStatus || seed.lifecycleStatus,
+              reportingModality: f.reportingModality || seed.reportingModality,
+              issuingOrganism: f.issuingOrganism || seed.issuingOrganism,
+              versionHistory: f.versionHistory || seed.versionHistory,
+            };
+          });
+          const existingIds = new Set(merged.map((f: RegulatoryFormat) => f.id));
+          const missing = INITIAL_REGULATORY_FORMATS.filter((f) => !existingIds.has(f.id));
+          setRegulatoryFormats([...merged, ...missing]);
+        }
+        if (parsed.receivingOrganisms && Array.isArray(parsed.receivingOrganisms)) {
+          const existingOrgIds = new Set(
+            parsed.receivingOrganisms.map((o: ReceivingOrganismDefinition) => o.id)
+          );
+          const missingOrgs = INITIAL_RECEIVING_ORGANISMS.filter(
+            (o) => !existingOrgIds.has(o.id)
+          );
+          setReceivingOrganisms([...parsed.receivingOrganisms, ...missingOrgs]);
+        }
         if (parsed.totaliaSuggestions) setTotaliaSuggestions(parsed.totaliaSuggestions);
         if (parsed.executionRuns) setExecutionRuns(parsed.executionRuns);
       }
@@ -321,6 +392,8 @@ export const ConfiguratorProvider: React.FC<{ children: React.ReactNode }> = ({ 
         configuredOutputs,
         dataContracts,
         catalogSourceFormats,
+        regulatoryFormats,
+        receivingOrganisms,
         associations,
         environmentDeployments,
         totaliaSuggestions,
@@ -336,6 +409,8 @@ export const ConfiguratorProvider: React.FC<{ children: React.ReactNode }> = ({ 
     configuredOutputs,
     dataContracts,
     catalogSourceFormats,
+    regulatoryFormats,
+    receivingOrganisms,
     associations,
     environmentDeployments,
     totaliaSuggestions,
@@ -352,6 +427,319 @@ export const ConfiguratorProvider: React.FC<{ children: React.ReactNode }> = ({ 
     setSelectedOutputId(outputId);
     setPreselectedAssocOutputId(outputId);
     setActiveModuleState('associations');
+  };
+
+  const openAssociationForFormat = (formatId: string, preselectedOutputId?: string) => {
+    setPreselectedAssocFormatId(formatId);
+    if (preselectedOutputId) {
+      setSelectedOutputId(preselectedOutputId);
+      setPreselectedAssocOutputId(preselectedOutputId);
+    }
+    setActiveModuleState('associations');
+  };
+
+  const addReceivingOrganism = (org: ReceivingOrganismDefinition) => {
+    setReceivingOrganisms((prev) => {
+      const exists = prev.some(
+        (o) =>
+          o.id === org.id ||
+          (o.country === org.country && o.name.toLowerCase() === org.name.toLowerCase())
+      );
+      if (exists) {
+        return prev.map((o) => (o.id === org.id ? org : o));
+      }
+      return [...prev, org];
+    });
+    notify(
+      'success',
+      `Organismo receptor "${org.name}" (${org.country}) registrado en el catálogo único.`
+    );
+  };
+
+  const createRegulatoryFormat = (format: RegulatoryFormat) => {
+    const nowDate = getNowDate();
+    const initialHistory: FormatVersionEntry = {
+      versionLabel: format.specificationValidity?.versionLabel || format.normativeVersion || 'v1.0',
+      validFrom: format.specificationValidity?.validFrom || nowDate,
+      validTo: format.specificationValidity?.validTo || 'Abierta',
+      periodicity: format.periodicity,
+      applicableEntityTypes: format.applicableEntityTypes,
+      supportedFamilies: format.supportedFamilies || ['CSV'],
+      changedAt: nowDate,
+      changedBy: activeUserRole,
+      changeKind: 'Creación inicial',
+      changeSummary: `Alta administrativa en estado "${format.lifecycleStatus || 'Activo'}" (${
+        format.provenanceKind || 'Oficial'
+      }).`,
+    };
+    const enriched: RegulatoryFormat = {
+      ...format,
+      versionHistory:
+        format.versionHistory && format.versionHistory.length > 0
+          ? format.versionHistory
+          : [initialHistory],
+    };
+    setRegulatoryFormats((prev) => [enriched, ...prev]);
+    notify(
+      'success',
+      `Formato "${enriched.code ? `${enriched.code} · ` : ''}${enriched.name}" registrado bajo "${
+        enriched.regulator
+      }" en estado "${enriched.lifecycleStatus || 'Activo'}".`
+    );
+  };
+
+  const updateRegulatoryFormat = (updated: RegulatoryFormat) => {
+    setRegulatoryFormats((prev) =>
+      prev.map((f) => (f.id === updated.id ? updated : f))
+    );
+    notify(
+      'success',
+      `Formato "${updated.code || updated.name}" actualizado: Clasificación "${updated.classificationStatus}".`
+    );
+  };
+
+  const editRegulatoryFormat = (
+    updated: RegulatoryFormat,
+    createNewVersion: boolean,
+    changeSummary: string
+  ) => {
+    const nowDate = getNowDate();
+    setRegulatoryFormats((prev) =>
+      prev.map((f) => {
+        if (f.id !== updated.id) return f;
+        const priorHistory: FormatVersionEntry[] =
+          f.versionHistory && f.versionHistory.length > 0
+            ? f.versionHistory
+            : [
+                {
+                  versionLabel: f.specificationValidity?.versionLabel || f.normativeVersion || 'v1.0',
+                  validFrom: f.specificationValidity?.validFrom || '2026-01-01',
+                  validTo: f.specificationValidity?.validTo || 'Abierta',
+                  periodicity: f.periodicity,
+                  applicableEntityTypes: f.applicableEntityTypes,
+                  supportedFamilies: f.supportedFamilies || ['CSV'],
+                  changedAt: f.classificationValidatedAt || '2026-11-01',
+                  changedBy: f.classificationValidatedBy || 'Sistema',
+                  changeKind: 'Creación inicial',
+                  changeSummary: 'Versión base registrada en el catálogo.',
+                },
+              ];
+
+        const nextEntry: FormatVersionEntry = {
+          versionLabel:
+            updated.specificationValidity?.versionLabel || updated.normativeVersion || 'v1.1',
+          validFrom: updated.specificationValidity?.validFrom || nowDate,
+          validTo: updated.specificationValidity?.validTo || 'Abierta',
+          periodicity: updated.periodicity,
+          applicableEntityTypes: updated.applicableEntityTypes,
+          supportedFamilies: updated.supportedFamilies || ['CSV'],
+          changedAt: nowDate,
+          changedBy: activeUserRole,
+          changeKind: createNewVersion
+            ? 'Nueva versión de especificación'
+            : 'Corrección descriptiva',
+          changeSummary:
+            changeSummary ||
+            (createNewVersion
+              ? 'Actualización de especificación, vigencia o aplicabilidad.'
+              : 'Corrección descriptiva de metadatos informativos.'),
+        };
+
+        return {
+          ...updated,
+          versionHistory: [...priorHistory, nextEntry],
+        };
+      })
+    );
+    notify(
+      'success',
+      createNewVersion
+        ? `Formato "${updated.code || updated.name}" actualizado con nueva revisión normativa (${
+            updated.normativeVersion
+          }). Se preservó la versión anterior en el historial y las salidas publicadas permanecen intactas.`
+        : `Corrección descriptiva guardada en el formato "${
+            updated.code || updated.name
+          }" conservando identificador y asociaciones.`
+    );
+  };
+
+  const deleteRegulatoryFormat = (formatId: string): { deleted: boolean; reason: string } => {
+    const target = regulatoryFormats.find((f) => f.id === formatId);
+    if (!target) {
+      return { deleted: false, reason: 'El formato solicitado no existe en el catálogo.' };
+    }
+    const depCheck = evaluateFormatDependencies({
+      format: target,
+      associations,
+      executionRuns,
+    });
+    if (!depCheck.canDelete) {
+      notify('error', depCheck.explanation);
+      return { deleted: false, reason: depCheck.explanation };
+    }
+    setRegulatoryFormats((prev) => prev.filter((f) => f.id !== formatId));
+    notify(
+      'info',
+      `Formato "${target.code ? `${target.code} · ` : ''}${target.name}" eliminado definitivamente del catálogo tras verificar 0 dependencias.`
+    );
+    return { deleted: true, reason: depCheck.explanation };
+  };
+
+  const toggleFormatLifecycleStatus = (
+    formatId: string,
+    nextStatus: FormatLifecycleStatus,
+    reason: string
+  ) => {
+    const nowDate = getNowDate();
+    const target = regulatoryFormats.find((f) => f.id === formatId);
+    if (!target) return;
+
+    setRegulatoryFormats((prev) =>
+      prev.map((f) => {
+        if (f.id !== formatId) return f;
+        const priorHistory = f.versionHistory || [];
+        const statusEntry: FormatVersionEntry = {
+          versionLabel: f.specificationValidity?.versionLabel || f.normativeVersion || 'v1.0',
+          validFrom: f.specificationValidity?.validFrom || nowDate,
+          validTo: nextStatus === 'Inactivo' ? nowDate : f.specificationValidity?.validTo || 'Abierta',
+          periodicity: f.periodicity,
+          applicableEntityTypes: f.applicableEntityTypes,
+          supportedFamilies: f.supportedFamilies || ['CSV'],
+          changedAt: nowDate,
+          changedBy: activeUserRole,
+          changeKind: 'Cambio de estado',
+          changeSummary: `Estado cambiado a "${nextStatus}". Motivo: ${
+            reason || 'Decisión administrativa'
+          }`,
+        };
+        return {
+          ...f,
+          lifecycleStatus: nextStatus,
+          deactivatedAt: nextStatus === 'Inactivo' ? nowDate : undefined,
+          deactivationReason: nextStatus === 'Inactivo' ? reason : undefined,
+          versionHistory: [...priorHistory, statusEntry],
+        };
+      })
+    );
+
+    notify(
+      nextStatus === 'Inactivo' ? 'warning' : 'success',
+      nextStatus === 'Inactivo'
+        ? `Formato "${target.code || target.name}" desactivado desde ${nowDate}. Se bloquean nuevas asociaciones operativas activas conservando el historial y las asociaciones previas para consulta.`
+        : `Formato "${target.code || target.name}" reactivado a estado "${nextStatus}".`
+    );
+  };
+
+  const createNewOutputForFormat = (format: RegulatoryFormat): ConfiguredOutput => {
+    const chosenType =
+      outputTypes.find((t) => format.supportedFamilies?.includes(t.family)) ||
+      outputTypes[0];
+    const now = getNowDate();
+    const newOutput: ConfiguredOutput = {
+      id: `OUT-${format.code ? format.code.toUpperCase().replace(/\s+/g, '_') : 'FMT'}-${Date.now().toString().slice(-4)}`,
+      code: `SAL-${format.code ? format.code.toUpperCase().replace(/\s+/g, '_') : 'DESTINO'}-01`,
+      name: `Salida para ${format.code || ''} · ${format.name}`.trim(),
+      description: `Estructura de salida configurada específicamente para cumplir con los requerimientos de ${format.name} (${format.regulator}).`,
+      purpose: `Generación técnica para formato ${format.code || format.name} (${format.regulator}).`,
+      responsibleUser: activeUserRole,
+      validFrom: now,
+      validTo: 'Abierta',
+      jurisdiction: format.jurisdiction,
+      regulator: format.regulator,
+      outputTypeId: chosenType.id,
+      version: '1.0',
+      status: 'Borrador',
+      derivationType: 'Original',
+      updatedAt: now,
+      fingerprint: `sha256:init_${Date.now().toString(16)}`,
+      composition: {
+        fileNamePattern: `${(format.code || 'SALIDA').toLowerCase()}_{entidad}_{periodo}`,
+        extension: chosenType.extension || 'csv',
+        encoding: 'UTF-8',
+        delimiter: chosenType.family === 'CSV' ? ';' : 'N/A',
+        decimalSeparator: ',',
+        includeHeader: true,
+        includeControlTotals: false,
+        includeFooter: false,
+        packaging: 'Sin empaquetar',
+        maxPackageBytes: 10485760,
+        emptyDatasetPolicy: 'Producir vacío válido',
+        packageMembers: [
+          {
+            id: `PM-${Date.now()}-1`,
+            role: 'Principal',
+            cardinality: '1..1 (Obligatorio)',
+            outputDefinitionId: `OUT-${format.code ? format.code.toUpperCase().replace(/\s+/g, '_') : 'FMT'}-${Date.now().toString().slice(-4)}`,
+            outputVersion: '1.0',
+            fileNamePattern: `${(format.code || 'SALIDA').toLowerCase()}_{entidad}_{periodo}.${chosenType.extension || 'csv'}`,
+            includeInRegulatoryDelivery: true,
+            allowRoleMappingOverride: false,
+          },
+        ],
+      },
+      dataContractId: dataContracts[0]?.id || 'DC-CARTERA-01',
+      defaultDeliveryChannelId: deliveryChannels[0]?.id || 'CHAN-MANUAL-01',
+      signatureServiceRef: 'Sin firma digital',
+      encryptionPolicy: 'Sin cifrado adicional (TLS canal)',
+      sourceDocIds: [],
+      fields: [
+        {
+          id: `FLD-${Date.now()}-1`,
+          technicalName: 'id_registro',
+          label: 'ID Registro',
+          description: 'Identificador único de la operación reportada',
+          recordSection: 'Detalle',
+          order: 1,
+          dataType: 'Texto',
+          physicalType: 'VARCHAR(20)',
+          length: 20,
+          lengthUnit: 'Caracteres',
+          required: true,
+          nullable: false,
+          startPosition: 1,
+          formatMask: '',
+          defaultValue: '',
+          paddingChar: chosenType.family === 'TXT' ? '0' : 'Ninguno',
+          alignment: 'Izquierda',
+          overflowRule: 'Bloquear con error',
+          protectionClass: 'Parametrizable',
+          evidenceState: 'Sustento explícito',
+          evidenceSourceRef: `Requerimiento de formato ${format.code || format.name}`,
+          mapping: {
+            transformationKind: 'Directo',
+            sourceContractId: dataContracts[0]?.id || 'DC-CARTERA-01',
+            sourceField: dataContracts[0]?.fields[0]?.name || 'id_obligacion',
+            expression: dataContracts[0]?.fields[0]?.name || 'id_obligacion',
+            isParameterizedPoint: false,
+            emptyTreatment: 'Error bloqueante',
+            mappingStatus: 'Confirmado por usuario',
+          },
+        },
+      ],
+      validationRules: [],
+      versionHistory: [
+        {
+          version: '1.0',
+          status: 'Borrador',
+          createdAt: getNowDateTime(),
+          createdBy: activeUserRole,
+          justification: `Creación inicial orientada al formato de destino ${format.code || format.name} (${format.regulator}).`,
+          changesSummary: ['Estructura inicial en borrador para diseño de campos y mapeo.'],
+          fingerprint: `sha256:init_${Date.now().toString(16)}`,
+          derivationKind: 'Creación inicial',
+        },
+      ],
+    };
+
+    setConfiguredOutputs((prev) => [newOutput, ...prev]);
+    setSelectedOutputId(newOutput.id);
+    setActiveBuilderStep(1);
+    setActiveModuleState('builder');
+    notify(
+      'success',
+      `Nueva salida en borrador "${newOutput.code}" creada para el formato ${format.code || format.name}. Complete los campos y transformaciones en los 7 pasos.`
+    );
+    return newOutput;
   };
 
   const saveOutputType = (typeItem: OutputType) => {
@@ -848,6 +1236,40 @@ export const ConfiguratorProvider: React.FC<{ children: React.ReactNode }> = ({ 
     notify('info', 'Asociación eliminada del registro.');
   };
 
+  const unlinkAssociation = (assocId: string, reason?: string) => {
+    const target = associations.find((a) => a.id === assocId);
+    if (!target) return;
+    const hasExecutions = executionRuns.some((r) => r.associationId === assocId);
+    if (hasExecutions || target.status === 'Activa') {
+      const nowDate = getNowDate();
+      setAssociations((prev) =>
+        prev.map((a) =>
+          a.id === assocId
+            ? {
+                ...a,
+                status: 'Retirada',
+                validTo: nowDate,
+                updatedAt: nowDate,
+                updatedBy: activeUserRole,
+              }
+            : a
+        )
+      );
+      notify(
+        'info',
+        `Salida desvinculada operativamente (${target.code}): la asociación pasó a estado "Retirada" con fin de vigencia ${nowDate} (${
+          reason || 'Desvinculación solicitada por el usuario'
+        }). El formato de destino y la salida configurada se conservan intactos.`
+      );
+    } else {
+      setAssociations((prev) => prev.filter((a) => a.id !== assocId));
+      notify(
+        'info',
+        `Vínculo en borrador (${target.code}) desvinculado y retirado sin eliminar el formato ni la salida configurada.`
+      );
+    }
+  };
+
   const adoptOutputVersionInAssociation = (assocId: string, newVersion: string) => {
     setAssociations((prev) =>
       prev.map((a) =>
@@ -1284,6 +1706,8 @@ export const ConfiguratorProvider: React.FC<{ children: React.ReactNode }> = ({ 
     setConfiguredOutputs(INITIAL_CONFIGURED_OUTPUTS);
     setDataContracts(INITIAL_DATA_CONTRACTS);
     setCatalogSourceFormats(INITIAL_CATALOG_SOURCE_FORMATS);
+    setRegulatoryFormats(INITIAL_REGULATORY_FORMATS);
+    setReceivingOrganisms(INITIAL_RECEIVING_ORGANISMS);
     setAssociations(INITIAL_ASSOCIATIONS);
     setEnvironmentDeployments(INITIAL_ENVIRONMENT_DEPLOYMENTS);
     setTotaliaSuggestions(INITIAL_TOTALIA_SUGGESTIONS);
@@ -1316,6 +1740,8 @@ export const ConfiguratorProvider: React.FC<{ children: React.ReactNode }> = ({ 
         catalogSourceFormats,
         daqueProfiles,
         regulatoryFormats,
+        receivingOrganisms,
+        entityTypes,
         transmissionTypes,
         deliveryChannels,
         associations,
@@ -1327,6 +1753,16 @@ export const ConfiguratorProvider: React.FC<{ children: React.ReactNode }> = ({ 
         notify,
         clearBanner,
         saveOutputType,
+        addReceivingOrganism,
+        createRegulatoryFormat,
+        updateRegulatoryFormat,
+        editRegulatoryFormat,
+        deleteRegulatoryFormat,
+        toggleFormatLifecycleStatus,
+        openAssociationForFormat,
+        preselectedAssocFormatId,
+        setPreselectedAssocFormatId,
+        createNewOutputForFormat,
         saveDataContract,
         saveCatalogSourceFormat,
         importCatalogEntriesBatch,
@@ -1344,6 +1780,7 @@ export const ConfiguratorProvider: React.FC<{ children: React.ReactNode }> = ({ 
         transitionOutputStatus,
         saveAssociation,
         deleteAssociation,
+        unlinkAssociation,
         adoptOutputVersionInAssociation,
         runEnvironmentAction,
         decideTotaliaSuggestion,

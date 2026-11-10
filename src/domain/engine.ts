@@ -5,12 +5,17 @@ import {
   DaqueFormatProfile,
   DataContract,
   DataContractField,
+  EntityTypeDefinition,
   ExecutionFinding,
+  ExecutionRun,
+  FormatLifecycleStatus,
   FormatOutputAssociation,
   OutputType,
+  ReceivingOrganismDefinition,
   RegulatoryFormat,
   SourceExecutionBatch,
   StructureField,
+  TransmissionType,
 } from './types';
 
 export interface FileNameContext {
@@ -3028,4 +3033,907 @@ export function auditCatalogImportEntries(entries: CatalogSourceFormatEntry[]): 
     anomalies,
   };
 }
+
+/**
+ * Filter criteria for destination regulatory formats
+ */
+export interface FormatFilterCriteria {
+  country?: 'Colombia' | 'Perú' | 'ALL';
+  entityType?: string; // e.g. "Establecimientos Bancarios" or "ALL"
+  regulator?: string; // e.g. "SFC", "DIAN", "SBS Perú", or "ALL"
+  periodicity?: string; // e.g. "Mensual", "Trimestral", or "ALL"
+  reportingModality?: 'ALL' | 'Periódico' | 'Por evento';
+  lifecycleStatus?: 'ALL' | FormatLifecycleStatus;
+  classificationStatus?:
+    | 'ALL'
+    | 'Clasificado y validado'
+    | 'Pendiente de clasificación'
+    | 'Con observaciones de aplicabilidad';
+  normativeAvailability?:
+    | 'ALL'
+    | 'Vigente'
+    | 'Por entrar en vigencia'
+    | 'Histórico / En revisión'
+    | 'Pendiente de especificación';
+  searchQuery?: string;
+}
+
+export interface FilterRegulatoryFormatsResult {
+  filtered: RegulatoryFormat[];
+  totalInCountry: number;
+  applicableCount: number;
+  pendingClassificationCount: number;
+  withObservationsCount: number;
+  hasActiveFilters: boolean;
+}
+
+/**
+ * Filters regulatory formats based on independent and combinable dimensions:
+ * Country, Receiving Organism, Reporting Entity Type, Format/Annex, Version/Validity,
+ * Periodicity, Reporting Modality, Lifecycle Status, Classification Status, and text search.
+ */
+export function filterRegulatoryFormats(
+  formats: RegulatoryFormat[],
+  criteria: FormatFilterCriteria
+): FilterRegulatoryFormatsResult {
+  const country = criteria.country || 'ALL';
+  const entityType = criteria.entityType || 'ALL';
+  const regulator = criteria.regulator || 'ALL';
+  const periodicity = criteria.periodicity || 'ALL';
+  const reportingModality = criteria.reportingModality || 'ALL';
+  const lifecycleStatus = criteria.lifecycleStatus || 'ALL';
+  const classificationStatus = criteria.classificationStatus || 'ALL';
+  const normativeAvailability = criteria.normativeAvailability || 'ALL';
+  const query = (criteria.searchQuery || '').trim().toLowerCase();
+
+  // First partition by country
+  const countryFormats = formats.filter((f) => {
+    if (country === 'ALL') return true;
+    return f.jurisdiction === country || f.country === country;
+  });
+
+  const totalInCountry = countryFormats.length;
+
+  let applicableCount = 0;
+  let pendingClassificationCount = 0;
+  let withObservationsCount = 0;
+
+  countryFormats.forEach((f) => {
+    if (f.classificationStatus === 'Pendiente de clasificación') {
+      pendingClassificationCount++;
+    } else if (f.classificationStatus === 'Con observaciones de aplicabilidad') {
+      withObservationsCount++;
+    }
+
+    if (entityType === 'ALL' || f.applicableEntityTypes.includes(entityType)) {
+      applicableCount++;
+    }
+  });
+
+  const filtered = countryFormats.filter((f) => {
+    // Entity Type filter
+    if (entityType !== 'ALL') {
+      const isExplicitlyApplicable = f.applicableEntityTypes.includes(entityType);
+      const isPending = f.classificationStatus === 'Pendiente de clasificación';
+      if (classificationStatus === 'Clasificado y validado' && !isExplicitlyApplicable) {
+        return false;
+      }
+      if (!isExplicitlyApplicable && !isPending) {
+        return false;
+      }
+    }
+
+    // Regulator filter
+    if (regulator !== 'ALL') {
+      const regPrefix = regulator.split(' - ')[0].trim().toLowerCase();
+      const fmtReg = f.regulator.trim().toLowerCase();
+      if (
+        f.regulator !== regulator &&
+        !fmtReg.startsWith(regPrefix) &&
+        !regulator.toLowerCase().startsWith(fmtReg)
+      ) {
+        return false;
+      }
+    }
+
+    // Periodicity filter
+    if (periodicity !== 'ALL' && f.periodicity !== periodicity) {
+      return false;
+    }
+
+    // Reporting modality filter
+    if (reportingModality !== 'ALL') {
+      const effectiveModality = f.reportingModality || 'Periódico';
+      if (effectiveModality !== reportingModality) {
+        return false;
+      }
+    }
+
+    // Lifecycle status filter
+    if (lifecycleStatus !== 'ALL') {
+      const effectiveLifecycle: FormatLifecycleStatus =
+        f.lifecycleStatus ||
+        (f.classificationStatus === 'Pendiente de clasificación'
+          ? 'Pendiente de validación'
+          : 'Activo');
+      if (effectiveLifecycle !== lifecycleStatus) {
+        return false;
+      }
+    }
+
+    // Classification status filter
+    if (classificationStatus !== 'ALL' && f.classificationStatus !== classificationStatus) {
+      return false;
+    }
+
+    // Normative availability filter
+    if (
+      normativeAvailability !== 'ALL' &&
+      f.normativeAvailability !== normativeAvailability
+    ) {
+      return false;
+    }
+
+    // Search query
+    if (query) {
+      const matchCode = f.code.toLowerCase().includes(query);
+      const matchInternalCode = (f.internalCode || '').toLowerCase().includes(query);
+      const matchName = f.name.toLowerCase().includes(query);
+      const matchInternal = (f.internalNumberPeru || '').toLowerCase().includes(query);
+      const matchAnnex = (f.annexOrFormLabelPeru || '').toLowerCase().includes(query);
+      const matchReg = f.regulator.toLowerCase().includes(query);
+      const matchIssuer = (f.issuingOrganism || '').toLowerCase().includes(query);
+      const matchObligation = (f.obligation || '').toLowerCase().includes(query);
+      if (
+        !matchCode &&
+        !matchInternalCode &&
+        !matchName &&
+        !matchInternal &&
+        !matchAnnex &&
+        !matchReg &&
+        !matchIssuer &&
+        !matchObligation
+      ) {
+        return false;
+      }
+    }
+
+    return true;
+  });
+
+  const hasActiveFilters =
+    country !== 'ALL' ||
+    entityType !== 'ALL' ||
+    regulator !== 'ALL' ||
+    periodicity !== 'ALL' ||
+    reportingModality !== 'ALL' ||
+    lifecycleStatus !== 'ALL' ||
+    classificationStatus !== 'ALL' ||
+    normativeAvailability !== 'ALL' ||
+    query.length > 0;
+
+  return {
+    filtered,
+    totalInCountry,
+    applicableCount,
+    pendingClassificationCount,
+    withObservationsCount,
+    hasActiveFilters,
+  };
+}
+
+/**
+ * Result of validating an association between a format, transmission type, and configured output.
+ */
+export interface AssociationValidationResult {
+  isValid: boolean;
+  canActivate: boolean;
+  blockers: string[];
+  warnings: string[];
+  pendingChecks: string[];
+  summary: string;
+}
+
+/**
+ * Validates the operational and technical compatibility of associating an output with a format and transmission.
+ * Enforces anti-regression, duplicate checking, and prevents activating associations on unclassified formats.
+ */
+export function validateAssociationContext(params: {
+  format: RegulatoryFormat;
+  transmissionType?: TransmissionType;
+  configuredOutput?: ConfiguredOutput;
+  outputType?: OutputType;
+  entityType?: string;
+  country?: 'Colombia' | 'Perú';
+  existingAssociations: FormatOutputAssociation[];
+  currentAssociationId?: string;
+  proposedStatus: 'Activa' | 'Instalada sin activar' | 'Borrador';
+  proposedModality: 'Inicial' | 'Corrección' | 'Reemplazo';
+  proposedEnvironment: 'QA' | 'Producción';
+  proposedValidFrom?: string;
+  proposedValidTo?: string;
+}): AssociationValidationResult {
+  const {
+    format,
+    transmissionType,
+    configuredOutput,
+    outputType,
+    entityType,
+    country,
+    existingAssociations,
+    currentAssociationId,
+    proposedStatus,
+    proposedModality,
+    proposedEnvironment,
+  } = params;
+
+  const blockers: string[] = [];
+  const warnings: string[] = [];
+  const pendingChecks: string[] = [];
+
+  // 1. Country match check
+  if (country && format.jurisdiction !== country && format.country !== country) {
+    blockers.push(
+      `Incompatibilidad de país: El formato pertenece a ${format.jurisdiction}, pero el contexto seleccionado es ${country}.`
+    );
+  }
+
+  // 2. Entity type applicability and classification status
+  if (format.classificationStatus === 'Pendiente de clasificación') {
+    if (proposedStatus === 'Activa') {
+      blockers.push(
+        `Formato pendiente de clasificación: La referencia normativa "${format.name}" aún no tiene validada su aplicabilidad institucional. No se puede activar operativamente hasta que un administrador valide los tipos de entidad a los que aplica.`
+      );
+    } else {
+      warnings.push(
+        `Formato pendiente de clasificación: Se puede guardar la asociación en estado "${proposedStatus}" para avanzar en el diseño, pero requerirá validación antes de su activación en Producción.`
+      );
+    }
+    pendingChecks.push('Validación administrativa de aplicabilidad institucional');
+  } else if (
+    entityType &&
+    entityType !== 'ALL' &&
+    !format.applicableEntityTypes.includes(entityType)
+  ) {
+    blockers.push(
+      `Incompatibilidad institucional: El formato "${format.code || format.name}" no está clasificado como aplicable para "${entityType}". Tipos aplicables documentados: ${format.applicableEntityTypes.join(', ')}.`
+    );
+  }
+
+  // 3. Technical family compatibility
+  if (transmissionType && outputType) {
+    const isFamilyCompatible = transmissionType.compatibleFamilies.includes(outputType.family);
+    if (!isFamilyCompatible) {
+      blockers.push(
+        `Incompatibilidad técnica de serialización: La transmisión "${transmissionType.name}" admite familias [${transmissionType.compatibleFamilies.join(
+          ', '
+        )}], pero la salida "${configuredOutput?.code || ''}" es de tipo ${outputType.family}.`
+      );
+    }
+
+    if (
+      format.supportedFamilies &&
+      format.supportedFamilies.length > 0 &&
+      !format.supportedFamilies.includes(outputType.family)
+    ) {
+      warnings.push(
+        `El formato documenta soporte principal para [${format.supportedFamilies.join(
+          ', '
+        )}]. La salida usa ${outputType.family}; verifique que el receptor admita esta familia técnica.`
+      );
+    }
+  } else {
+    pendingChecks.push('Comprobación de serializador técnico y familia de archivo');
+  }
+
+  // 4. Output state
+  if (configuredOutput) {
+    if (configuredOutput.status === 'Borrador' && proposedStatus === 'Activa') {
+      warnings.push(
+        `La salida "${configuredOutput.code}" está en estado "Borrador". Se recomienda aprobar y publicar la salida antes de activar la entrega en ambiente de Producción.`
+      );
+    }
+  } else {
+    blockers.push('Debe seleccionar una salida configurada para vincular los datos y la estructura.');
+  }
+
+  // 5. Duplicate and overlap prevention
+  if (transmissionType && proposedStatus === 'Activa') {
+    const conflicting = existingAssociations.find((a) => {
+      if (currentAssociationId && a.id === currentAssociationId) return false;
+      if (a.status !== 'Activa') return false;
+      return (
+        a.formatId === format.id &&
+        a.transmissionTypeId === transmissionType.id &&
+        a.modality === proposedModality &&
+        a.environment === proposedEnvironment
+      );
+    });
+
+    if (conflicting) {
+      blockers.push(
+        `Conflicto de coincidencia única: Ya existe una asociación activa (${conflicting.code}) para el formato "${format.code}", modalidad "${proposedModality}" y ambiente "${proposedEnvironment}". Para activar esta asociación, desactive la anterior o guárdela como "Instalada sin activar".`
+      );
+    }
+  }
+
+  // 6. Normative availability & Lifecycle status checks
+  if (format.lifecycleStatus === 'Inactivo') {
+    if (proposedStatus === 'Activa') {
+      blockers.push(
+        `Formato desactivado: El formato "${format.code || format.name}" se encuentra en estado "Inactivo"${
+          format.deactivatedAt ? ` desde ${format.deactivatedAt}` : ''
+        }. No se permite activar nuevas asociaciones operativas sobre un formato desactivado.`
+      );
+    } else {
+      warnings.push(
+        `El formato está en estado "Inactivo". Se conserva solo para trazabilidad e historial; no podrá activarse en operación a menos que sea reactivado.`
+      );
+    }
+  } else if (format.lifecycleStatus === 'Borrador') {
+    if (proposedStatus === 'Activa') {
+      blockers.push(
+        `Formato en borrador: El formato "${format.code || format.name}" aún se encuentra en estado "Borrador". Debe activar el formato con sus datos y evidencias completos antes de activar una asociación operativa.`
+      );
+    } else {
+      warnings.push(
+        `El formato se encuentra en estado "Borrador". Puede guardar la asociación como "${proposedStatus}" durante el diseño preparatorio.`
+      );
+    }
+  }
+
+  if (format.normativeAvailability === 'Por entrar en vigencia') {
+    const validFrom = format.specificationValidity?.validFrom || '';
+    if (proposedStatus === 'Activa') {
+      blockers.push(
+        `Vigencia futura: El formato "${format.code || format.name}" tiene inicio de vigencia programado (${validFrom || 'Por entrar en vigencia'}). Se permite asociarlo como "Instalada sin activar" o "Borrador", pero no activarlo operativamente antes de su fecha de entrada en vigor.`
+      );
+    } else {
+      warnings.push(
+        `El formato está marcado como "Por entrar en vigencia" (${validFrom}). La asociación quedará preparada para su futura activación.`
+      );
+    }
+  } else if (format.normativeAvailability === 'Histórico / En revisión') {
+    warnings.push(
+      `El formato se encuentra marcado como "${format.normativeAvailability}". Verifique la vigencia de la circular antes de generar archivos para ente supervisor.`
+    );
+  }
+
+  const isValid = blockers.length === 0;
+  const canActivate =
+    isValid &&
+    format.classificationStatus !== 'Pendiente de clasificación' &&
+    format.lifecycleStatus !== 'Inactivo' &&
+    format.lifecycleStatus !== 'Borrador' &&
+    format.normativeAvailability !== 'Por entrar en vigencia';
+
+  let summary = 'Asociación compatible y lista para registrar.';
+  if (blockers.length > 0) {
+    summary = `Bloqueada por ${blockers.length} incompatibilidad(es): ${blockers[0]}`;
+  } else if (warnings.length > 0) {
+    summary = `Válida con ${warnings.length} observación(es): ${warnings[0]}`;
+  }
+
+  return {
+    isValid,
+    canActivate,
+    blockers,
+    warnings,
+    pendingChecks,
+    summary,
+  };
+}
+
+/**
+ * Generates TOTALiA contextual recommendations for a destination regulatory format
+ */
+export function generateTotaliaFormatRecommendations(params: {
+  format: RegulatoryFormat;
+  configuredOutputs: ConfiguredOutput[];
+  outputTypes: OutputType[];
+  transmissionTypes: TransmissionType[];
+  entityType?: string;
+}): {
+  reusableOutputs: Array<{
+    output: ConfiguredOutput;
+    matchScore: number;
+    matchReason: string;
+    suggestedTransmissionId: string;
+  }>;
+  suggestedAction: 'reuse' | 'create_new' | 'validate_classification';
+  explanation: string;
+  requirementsSummary: string[];
+} {
+  const { format, configuredOutputs, outputTypes, transmissionTypes } = params;
+
+  if (format.classificationStatus === 'Pendiente de clasificación') {
+    return {
+      reusableOutputs: [],
+      suggestedAction: 'validate_classification',
+      explanation: `El formato "${format.name}" se encuentra pendiente de clasificación institucional. Para garantizar la integridad normativa, valide los tipos de entidad a los que aplica antes de programar entregas automáticas.`,
+      requirementsSummary: [
+        'Referencia documental registrada sin tipos de entidad formalmente documentados',
+        'Se permite diseñar estructuras y borradores preparatorios',
+        'Requiere validación administrativa antes de activación en Producción',
+      ],
+    };
+  }
+
+  const reusableOutputs: Array<{
+    output: ConfiguredOutput;
+    matchScore: number;
+    matchReason: string;
+    suggestedTransmissionId: string;
+  }> = [];
+
+  const defaultTx =
+    transmissionTypes.find((t) => format.enabledTransmissionTypes.includes(t.id)) ||
+    transmissionTypes[0];
+
+  configuredOutputs.forEach((output) => {
+    const oType = outputTypes.find((t) => t.id === output.outputTypeId);
+    if (!oType) return;
+
+    let matchScore = 0;
+    const reasons: string[] = [];
+
+    // Country match
+    if (output.jurisdiction === format.jurisdiction || output.jurisdiction === 'Multirregulador') {
+      matchScore += 30;
+      reasons.push(`Jurisdicción compatible (${output.jurisdiction})`);
+    }
+
+    // Family match
+    if (format.supportedFamilies && format.supportedFamilies.includes(oType.family)) {
+      matchScore += 40;
+      reasons.push(`Familia técnica coincide (${oType.family})`);
+    } else if (defaultTx?.compatibleFamilies.includes(oType.family)) {
+      matchScore += 25;
+      reasons.push(`Compatible con canal de transmisión (${oType.family})`);
+    }
+
+    // Status preference
+    if (output.status === 'Publicada' || output.status === 'Aprobada') {
+      matchScore += 20;
+      reasons.push('Versión estable publicada');
+    } else if (output.status === 'Borrador') {
+      matchScore += 10;
+      reasons.push('Estructura en borrador');
+    }
+
+    if (matchScore >= 40) {
+      reusableOutputs.push({
+        output,
+        matchScore,
+        matchReason: reasons.join(' · '),
+        suggestedTransmissionId: defaultTx?.id || 'TX-ORDINARIO',
+      });
+    }
+  });
+
+  reusableOutputs.sort((a, b) => b.matchScore - a.matchScore);
+
+  const suggestedAction = reusableOutputs.length > 0 ? 'reuse' : 'create_new';
+  const explanation =
+    reusableOutputs.length > 0
+      ? `TOTALiA® detectó ${reusableOutputs.length} salida(s) configurada(s) potencialmente reutilizable(s) para este formato sin necesidad de rediseñar las columnas.`
+      : `No se encontraron salidas existentes que coincidan con los requerimientos técnicos de este formato. TOTALiA® sugiere crear una nueva salida configurada con plantilla base preseleccionada.`;
+
+  const requirementsSummary = [
+    `Organismo receptor: ${format.regulator}`,
+    ...(format.issuingOrganism ? [`Organismo emisor del instructivo: ${format.issuingOrganism}`] : []),
+    `Periodicidad de presentación: ${format.periodicity} (${format.reportingModality || 'Periódico'})`,
+    `Vigencia de la especificación: ${format.specificationValidity?.versionLabel || format.normativeVersion} (${format.normativeAvailability})`,
+    ...(format.documentedRequirements || []),
+  ];
+
+  return {
+    reusableOutputs,
+    suggestedAction,
+    explanation,
+    requirementsSummary,
+  };
+}
+
+/**
+ * Detects duplicate or conflicting regulatory formats before creation or import.
+ * Checks by Country + Receiving Organism + (Official Code, Internal Code, Peru Internal Number, or Normalized Name).
+ */
+export function checkFormatDuplicateCandidates(
+  existingFormats: RegulatoryFormat[],
+  candidate: {
+    jurisdiction?: 'Colombia' | 'Perú';
+    regulator?: string;
+    code?: string;
+    internalCode?: string;
+    internalNumberPeru?: string;
+    annexOrFormLabelPeru?: string;
+    name?: string;
+  },
+  excludeFormatId?: string
+): {
+  hasExactDuplicate: boolean;
+  hasWarningCandidates: boolean;
+  duplicates: Array<{
+    format: RegulatoryFormat;
+    severity: 'Bloqueante' | 'Advertencia';
+    reason: string;
+  }>;
+} {
+  const duplicates: Array<{
+    format: RegulatoryFormat;
+    severity: 'Bloqueante' | 'Advertencia';
+    reason: string;
+  }> = [];
+
+  const candCountry = candidate.jurisdiction || 'Colombia';
+  const candReg = (candidate.regulator || '').trim().toLowerCase();
+  const candCode = (candidate.code || '').trim().toLowerCase();
+  const candInternal = (candidate.internalCode || '').trim().toLowerCase();
+  const candPeruNro = (candidate.internalNumberPeru || '').trim().toLowerCase();
+  const candName = (candidate.name || '').trim().toLowerCase();
+
+  for (const fmt of existingFormats) {
+    if (excludeFormatId && fmt.id === excludeFormatId) continue;
+
+    // 1. Check global internalCode collision
+    if (
+      candInternal &&
+      (fmt.internalCode || fmt.id).trim().toLowerCase() === candInternal
+    ) {
+      duplicates.push({
+        format: fmt,
+        severity: 'Bloqueante',
+        reason: `Identificador interno duplicado: "${candidate.internalCode}" ya está asignado al formato "${fmt.name}" (${fmt.regulator}).`,
+      });
+      continue;
+    }
+
+    const sameCountry = (fmt.country || fmt.jurisdiction) === candCountry;
+    const sameRegulator = fmt.regulator.trim().toLowerCase() === candReg;
+
+    if (sameCountry && sameRegulator) {
+      // 2. Same Country + Same Regulator + Same non-empty Official Code
+      if (candCode && fmt.code.trim().toLowerCase() === candCode) {
+        duplicates.push({
+          format: fmt,
+          severity: 'Bloqueante',
+          reason: `Ya existe un formato con el código oficial "${candidate.code}" para el organismo receptor "${fmt.regulator}" en ${candCountry} ("${fmt.name}").`,
+        });
+        continue;
+      }
+
+      // 3. Same Country + Same Regulator + Same Peru internal number
+      if (
+        candPeruNro &&
+        (fmt.internalNumberPeru || '').trim().toLowerCase() === candPeruNro
+      ) {
+        duplicates.push({
+          format: fmt,
+          severity: 'Bloqueante',
+          reason: `Ya existe un formato con el Nro Interno "${candidate.internalNumberPeru}" para "${fmt.regulator}" ("${fmt.name}").`,
+        });
+        continue;
+      }
+
+      // 4. Same Country + Same Regulator + Exact or very close name
+      if (candName && candName.length >= 5 && fmt.name.trim().toLowerCase() === candName) {
+        duplicates.push({
+          format: fmt,
+          severity: 'Bloqueante',
+          reason: `Ya existe un formato con el mismo nombre exacto "${fmt.name}" registrado bajo "${fmt.regulator}".`,
+        });
+        continue;
+      }
+    } else if (candCode && fmt.code.trim().toLowerCase() === candCode) {
+      // Shared official code across different countries or regulators (e.g. 410 DIAN CO vs 410 SBS PE)
+      duplicates.push({
+        format: fmt,
+        severity: 'Advertencia',
+        reason: `Aviso de código compartido: El código "${candidate.code}" también es utilizado por "${fmt.regulator}" (${fmt.jurisdiction} · "${fmt.name}"). Se permite su registro porque difiere el organismo receptor o país, manteniendo un identificador interno independiente.`,
+      });
+    }
+  }
+
+  return {
+    hasExactDuplicate: duplicates.some((d) => d.severity === 'Bloqueante'),
+    hasWarningCandidates: duplicates.some((d) => d.severity === 'Advertencia'),
+    duplicates,
+  };
+}
+
+/**
+ * Evaluates whether a regulatory format can be physically deleted or if it must be deactivated instead.
+ * Enforces requirement 4.1: Only allow deleting a format when it has NO associations, NO historical versions used,
+ * NO executions/deliveries, and NO other dependencies.
+ */
+export function evaluateFormatDependencies(params: {
+  format: RegulatoryFormat;
+  associations: FormatOutputAssociation[];
+  executionRuns: ExecutionRun[];
+}): {
+  canDelete: boolean;
+  linkedAssociations: FormatOutputAssociation[];
+  activeAssociationsCount: number;
+  linkedRuns: ExecutionRun[];
+  hasVersionHistoryDependencies: boolean;
+  blockingReasons: string[];
+  recommendedAction: 'Eliminar formato' | 'Desactivar formato';
+  explanation: string;
+} {
+  const { format, associations, executionRuns } = params;
+  const linkedAssociations = associations.filter((a) => a.formatId === format.id);
+  const activeAssociationsCount = linkedAssociations.filter((a) => a.status === 'Activa').length;
+  const linkedRuns = executionRuns.filter((r) => r.formatId === format.id);
+  const versionHistoryCount = (format.versionHistory || []).length;
+  const hasVersionHistoryDependencies = versionHistoryCount > 1;
+
+  const blockingReasons: string[] = [];
+
+  if (linkedAssociations.length > 0) {
+    blockingReasons.push(
+      `Tiene ${linkedAssociations.length} asociación(es) vinculada(s) (${activeAssociationsCount} activa(s)): ${linkedAssociations
+        .map((a) => `${a.code} [${a.status}]`)
+        .join(', ')}.`
+    );
+  }
+
+  if (linkedRuns.length > 0) {
+    blockingReasons.push(
+      `Registra ${linkedRuns.length} ejecución(es) o entrega(s) histórica(s) (${linkedRuns
+        .map((r) => r.runCode)
+        .join(', ')}).`
+    );
+  }
+
+  if (hasVersionHistoryDependencies) {
+    blockingReasons.push(
+      `Posee ${versionHistoryCount} versiones normativas registradas en su historial auditable.`
+    );
+  }
+
+  const canDelete = blockingReasons.length === 0;
+  const recommendedAction = canDelete ? 'Eliminar formato' : 'Desactivar formato';
+
+  const explanation = canDelete
+    ? `El formato "${format.code ? `${format.code} · ` : ''}${format.name}" no tiene salidas asociadas, versiones históricas utilizadas ni ejecuciones registradas. Puede eliminarse de forma segura.`
+    : `No se permite eliminar físicamente el formato "${format.code ? `${format.code} · ` : ''}${format.name}" porque existen dependencias de trazabilidad (${blockingReasons.join(
+        ' '
+      )}). Utilice la opción "Desactivar formato" para impedir nuevas asociaciones operativas conservando íntegro el historial.`;
+
+  return {
+    canDelete,
+    linkedAssociations,
+    activeAssociationsCount,
+    linkedRuns,
+    hasVersionHistoryDependencies,
+    blockingReasons,
+    recommendedAction,
+    explanation,
+  };
+}
+
+/**
+ * Evaluates the impact of editing a regulatory format, distinguishing a descriptive correction
+ * from a specification, validity, or applicability change (which requires a new version/revision).
+ */
+export function evaluateFormatEditImpact(params: {
+  original: RegulatoryFormat;
+  updated: RegulatoryFormat;
+  associations: FormatOutputAssociation[];
+  configuredOutputs: ConfiguredOutput[];
+}): {
+  changeClassification: 'Corrección descriptiva' | 'Cambio de especificación, vigencia o aplicabilidad';
+  requiresNewVersion: boolean;
+  structuralDiffs: string[];
+  descriptiveDiffs: string[];
+  impactedAssociations: FormatOutputAssociation[];
+  impactedOutputs: ConfiguredOutput[];
+  impactWarningSummary: string;
+} {
+  const { original, updated, associations, configuredOutputs } = params;
+  const structuralDiffs: string[] = [];
+  const descriptiveDiffs: string[] = [];
+
+  // Check structural / normative specification changes
+  if (original.code !== updated.code) {
+    structuralDiffs.push(`Código oficial: "${original.code || 'Sin código'}" → "${updated.code || 'Sin código'}"`);
+  }
+  if (original.regulator !== updated.regulator) {
+    structuralDiffs.push(`Organismo receptor: "${original.regulator}" → "${updated.regulator}"`);
+  }
+  if (original.periodicity !== updated.periodicity) {
+    structuralDiffs.push(`Periodicidad: "${original.periodicity}" → "${updated.periodicity}"`);
+  }
+  if ((original.reportingModality || 'Periódico') !== (updated.reportingModality || 'Periódico')) {
+    structuralDiffs.push(
+      `Modalidad de reporte: "${original.reportingModality || 'Periódico'}" → "${updated.reportingModality || 'Periódico'}"`
+    );
+  }
+  if (original.normativeVersion !== updated.normativeVersion) {
+    structuralDiffs.push(`Versión normativa: "${original.normativeVersion}" → "${updated.normativeVersion}"`);
+  }
+  if (original.normativeAvailability !== updated.normativeAvailability) {
+    structuralDiffs.push(
+      `Disponibilidad normativa: "${original.normativeAvailability}" → "${updated.normativeAvailability}"`
+    );
+  }
+  if (
+    (original.specificationValidity?.validFrom || '') !==
+      (updated.specificationValidity?.validFrom || '') ||
+    (original.specificationValidity?.validTo || '') !==
+      (updated.specificationValidity?.validTo || '')
+  ) {
+    structuralDiffs.push(
+      `Vigencia: [${original.specificationValidity?.validFrom || '-'} a ${
+        original.specificationValidity?.validTo || '-'
+      }] → [${updated.specificationValidity?.validFrom || '-'} a ${
+        updated.specificationValidity?.validTo || '-'
+      }]`
+    );
+  }
+
+  const origEntities = [...original.applicableEntityTypes].sort().join('|');
+  const updEntities = [...updated.applicableEntityTypes].sort().join('|');
+  if (origEntities !== updEntities) {
+    structuralDiffs.push(
+      `Tipos de entidad aplicables: [${original.applicableEntityTypes.join(', ') || 'Sin clasificar'}] → [${
+        updated.applicableEntityTypes.join(', ') || 'Sin clasificar'
+      }]`
+    );
+  }
+
+  const origFamilies = [...(original.supportedFamilies || [])].sort().join('|');
+  const updFamilies = [...(updated.supportedFamilies || [])].sort().join('|');
+  if (origFamilies !== updFamilies) {
+    structuralDiffs.push(
+      `Familias técnicas admitidas: [${(original.supportedFamilies || []).join(', ')}] → [${(
+        updated.supportedFamilies || []
+      ).join(', ')}]`
+    );
+  }
+
+  const origTx = [...original.enabledTransmissionTypes].sort().join('|');
+  const updTx = [...updated.enabledTransmissionTypes].sort().join('|');
+  if (origTx !== updTx) {
+    structuralDiffs.push(
+      `Tipos de transmisión habilitados: [${original.enabledTransmissionTypes.join(', ')}] → [${updated.enabledTransmissionTypes.join(', ')}]`
+    );
+  }
+
+  // Check descriptive changes
+  if (original.name !== updated.name) {
+    descriptiveDiffs.push(`Nombre del formato actualizado`);
+  }
+  if (original.description !== updated.description) {
+    descriptiveDiffs.push(`Descripción actualizada`);
+  }
+  if (original.obligation !== updated.obligation) {
+    descriptiveDiffs.push(`Referencia normativa / obligación actualizada`);
+  }
+  if ((original.sourceUrl || '') !== (updated.sourceUrl || '')) {
+    descriptiveDiffs.push(`Enlace de soporte actualizado`);
+  }
+  if ((original.classificationNotes || '') !== (updated.classificationNotes || '')) {
+    descriptiveDiffs.push(`Notas de clasificación actualizadas`);
+  }
+
+  const requiresNewVersion = structuralDiffs.length > 0;
+  const changeClassification = requiresNewVersion
+    ? 'Cambio de especificación, vigencia o aplicabilidad'
+    : 'Corrección descriptiva';
+
+  const impactedAssociations = associations.filter((a) => a.formatId === original.id);
+  const impactedOutputIds = new Set(impactedAssociations.map((a) => a.configuredOutputId));
+  const impactedOutputs = configuredOutputs.filter((o) => impactedOutputIds.has(o.id));
+
+  let impactWarningSummary =
+    'Corrección descriptiva menor: actualiza los textos informativos conservando el identificador, la versión vigente y las asociaciones.';
+  if (requiresNewVersion) {
+    impactWarningSummary =
+      impactedAssociations.length > 0
+        ? `Cambio de especificación/aplicabilidad detectado (${structuralDiffs.length} atributo(s) técnico-normativo(s)). Este ajuste afecta a ${impactedAssociations.length} asociación(es) y ${impactedOutputs.length} salida(s) configurada(s) (${impactedOutputs
+            .map((o) => `${o.code} v${o.version}`)
+            .join(', ')}). Se registrará una nueva revisión en el historial del formato sin alterar silenciosamente las salidas publicadas.`
+        : `Cambio de especificación/aplicabilidad detectado (${structuralDiffs.length} atributo(s)). Se registrará una nueva entrada en el historial de versiones del formato.`;
+  }
+
+  return {
+    changeClassification,
+    requiresNewVersion,
+    structuralDiffs,
+    descriptiveDiffs,
+    impactedAssociations,
+    impactedOutputs,
+    impactWarningSummary,
+  };
+}
+
+export interface OrganismSummaryCard {
+  organism: ReceivingOrganismDefinition;
+  totalFormats: number;
+  activeFormats: number;
+  pendingClassificationFormats: number;
+  inactiveFormats: number;
+  associatedOutputsCount: number;
+  activeAssociationsCount: number;
+  formats: RegulatoryFormat[];
+}
+
+/**
+ * Computes accurate summaries per receiving organism from the single catalog of formats.
+ * Never inflates format counts by historical versions.
+ */
+export function computeOrganismSummaries(params: {
+  organisms: ReceivingOrganismDefinition[];
+  formats: RegulatoryFormat[];
+  associations: FormatOutputAssociation[];
+  countryFilter?: 'Colombia' | 'Perú' | 'ALL';
+  entityTypeFilter?: string;
+}): OrganismSummaryCard[] {
+  const {
+    organisms,
+    formats,
+    associations,
+    countryFilter = 'ALL',
+    entityTypeFilter = 'ALL',
+  } = params;
+
+  const filteredOrganisms = organisms.filter(
+    (org) => countryFilter === 'ALL' || org.country === countryFilter
+  );
+
+  return filteredOrganisms.map((org) => {
+    const orgFormats = formats.filter((f) => {
+      const sameOrg =
+        f.regulator === org.name ||
+        f.regulator === org.shortName ||
+        f.regulator === org.code;
+      if (!sameOrg) return false;
+      if (entityTypeFilter !== 'ALL') {
+        return (
+          f.applicableEntityTypes.includes(entityTypeFilter) ||
+          f.classificationStatus === 'Pendiente de clasificación'
+        );
+      }
+      return true;
+    });
+
+    let activeFormats = 0;
+    let pendingClassificationFormats = 0;
+    let inactiveFormats = 0;
+
+    orgFormats.forEach((f) => {
+      const life = f.lifecycleStatus || 'Activo';
+      if (life === 'Inactivo') {
+        inactiveFormats++;
+      } else if (
+        f.classificationStatus === 'Pendiente de clasificación' ||
+        life === 'Pendiente de validación' ||
+        life === 'Borrador'
+      ) {
+        pendingClassificationFormats++;
+      } else {
+        activeFormats++;
+      }
+    });
+
+    const orgFormatIds = new Set(orgFormats.map((f) => f.id));
+    const orgAssociations = associations.filter((a) => orgFormatIds.has(a.formatId));
+    const activeAssociationsCount = orgAssociations.filter((a) => a.status === 'Activa').length;
+    const associatedOutputsCount = new Set(orgAssociations.map((a) => a.configuredOutputId)).size;
+
+    return {
+      organism: org,
+      totalFormats: orgFormats.length,
+      activeFormats,
+      pendingClassificationFormats,
+      inactiveFormats,
+      associatedOutputsCount,
+      activeAssociationsCount,
+      formats: orgFormats,
+    };
+  });
+}
+
 

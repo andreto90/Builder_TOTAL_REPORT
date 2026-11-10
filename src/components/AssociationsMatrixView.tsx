@@ -5,6 +5,7 @@ import {
   CheckCircle2,
   ExternalLink,
   GitBranch,
+  Globe,
   Layers,
   Link2,
   Plus,
@@ -14,11 +15,13 @@ import {
   ShieldAlert,
   Sliders,
   Trash2,
+  Unlink,
 } from 'lucide-react';
 import { useConfigurator } from '../context/ConfiguratorContext';
 import { resolveFormatAssociation } from '../domain/engine';
 import { FormatOutputAssociation } from '../domain/types';
 import { HelpTooltip } from './HelpTooltip';
+import { DestinationFormatsCatalogView } from './DestinationFormatsCatalogView';
 
 export const AssociationsMatrixView: React.FC = () => {
   const {
@@ -37,10 +40,12 @@ export const AssociationsMatrixView: React.FC = () => {
     setPreselectedAssocOutputId,
     saveAssociation,
     deleteAssociation,
+    unlinkAssociation,
     openOutputInBuilder,
     notify,
   } = useConfigurator();
 
+  const [activeTab, setActiveTab] = useState<'catalog' | 'associations'>('catalog');
   const [selectedFormatFilter, setSelectedFormatFilter] = useState<string>('ALL');
   const [selectedAssocId, setSelectedAssocId] = useState<string>(associations[0]?.id || '');
   const [showNewModal, setShowNewModal] = useState<boolean>(false);
@@ -83,7 +88,7 @@ export const AssociationsMatrixView: React.FC = () => {
   const [editPrefix, setEditPrefix] = useState<string>('');
   const [editZeroPolicy, setEditZeroPolicy] = useState<string>('');
 
-  // Automatically open association modal when navigated from "Asociar" button on a specific output
+  // Keep preselected output synchronized when navigated from "Asociar" button on a specific output
   useEffect(() => {
     if (preselectedAssocOutputId) {
       const targetOut = configuredOutputs.find((o) => o.id === preselectedAssocOutputId);
@@ -92,11 +97,10 @@ export const AssociationsMatrixView: React.FC = () => {
         setNewCode(`ASO-${targetOut.code}-${Date.now().toString().slice(-3)}`);
         setNewPrefixOverride(targetOut.code);
         setNewEnv(globalEnvironment);
-        setShowNewModal(true);
+        setActiveTab('catalog');
       }
-      setPreselectedAssocOutputId(null);
     }
-  }, [preselectedAssocOutputId, configuredOutputs, setPreselectedAssocOutputId, globalEnvironment]);
+  }, [preselectedAssocOutputId, configuredOutputs, globalEnvironment]);
 
   const filteredAssociations = useMemo(() => {
     return associations.filter((a) => {
@@ -333,8 +337,47 @@ export const AssociationsMatrixView: React.FC = () => {
         </div>
       </div>
 
-      {/* Interactive Compatibility & Resolution Checker */}
-      <div className="bg-white border border-slate-200 rounded-md p-4">
+      {/* Two Related Tabs for Option D */}
+      <div className="flex border-b border-slate-200 gap-2 bg-slate-50/80 p-1 rounded-md border">
+        <button
+          type="button"
+          onClick={() => setActiveTab('catalog')}
+          className={`flex items-center gap-2 px-4 py-2.5 text-xs font-bold rounded transition-all cursor-pointer ${
+            activeTab === 'catalog'
+              ? 'bg-[#1E4E8C] text-white shadow-sm'
+              : 'text-slate-700 hover:bg-slate-200/70 hover:text-slate-900'
+          }`}
+        >
+          <Globe className="w-4 h-4" />
+          <span>1. Catálogo de formatos de destino ({regulatoryFormats.length})</span>
+        </button>
+        <button
+          type="button"
+          onClick={() => setActiveTab('associations')}
+          className={`flex items-center gap-2 px-4 py-2.5 text-xs font-bold rounded transition-all cursor-pointer ${
+            activeTab === 'associations'
+              ? 'bg-[#1E4E8C] text-white shadow-sm'
+              : 'text-slate-700 hover:bg-slate-200/70 hover:text-slate-900'
+          }`}
+        >
+          <Link2 className="w-4 h-4" />
+          <span>2. Asociaciones de salidas y resolución ({associations.length})</span>
+        </button>
+      </div>
+
+      {activeTab === 'catalog' ? (
+        <DestinationFormatsCatalogView
+          onSwitchToAssociationsTab={(formatIdFilter) => {
+            if (formatIdFilter) {
+              setSelectedFormatFilter(formatIdFilter);
+            }
+            setActiveTab('associations');
+          }}
+        />
+      ) : (
+        <>
+          {/* Interactive Compatibility & Resolution Checker */}
+          <div className="bg-white border border-slate-200 rounded-md p-4">
         <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3 pb-3 border-b border-slate-200">
           <div>
             <h2 className="text-sm font-bold text-slate-900 flex items-center gap-2">
@@ -628,10 +671,12 @@ export const AssociationsMatrixView: React.FC = () => {
                                 e.stopPropagation();
                                 setDeleteTarget(assoc);
                               }}
-                              aria-label={`Eliminar asociación ${assoc.code}`}
-                              className="p-1 text-slate-500 hover:text-rose-700 rounded hover:bg-rose-50 cursor-pointer"
+                              title="Desvincular salida o retirar asociación"
+                              aria-label={`Desvincular salida ${assoc.code}`}
+                              className="px-2 py-1 text-[11px] font-semibold text-rose-800 bg-rose-50 border border-rose-200 hover:bg-rose-100 rounded inline-flex items-center gap-1 cursor-pointer"
                             >
-                              <Trash2 className="w-3.5 h-3.5" />
+                              <Unlink className="w-3 h-3" />
+                              Desvincular
                             </button>
                           )}
                         </div>
@@ -833,6 +878,8 @@ export const AssociationsMatrixView: React.FC = () => {
           )}
         </div>
       </div>
+      </>
+      )}
 
       {/* Modal: Associate Existing Configured Output with a Format */}
       {showNewModal && (
@@ -1063,12 +1110,15 @@ export const AssociationsMatrixView: React.FC = () => {
         </div>
       )}
 
-      {/* Modal: Confirm Delete Association */}
+      {/* Modal: Confirm Unlink or Delete Association */}
       {deleteTarget && (
         <div className="fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center p-4">
           <div className="bg-white border border-slate-200 rounded-md shadow-xl max-w-md w-full overflow-hidden">
             <div className="px-4 py-3 bg-rose-900 text-white flex items-center justify-between">
-              <h3 className="text-sm font-bold">Confirmar eliminación de asociación</h3>
+              <h3 className="text-sm font-bold flex items-center gap-1.5">
+                <Unlink className="w-4 h-4 text-rose-200" />
+                Desvincular salida del formato receptor
+              </h3>
               <button
                 type="button"
                 onClick={() => setDeleteTarget(null)}
@@ -1078,10 +1128,13 @@ export const AssociationsMatrixView: React.FC = () => {
               </button>
             </div>
             <div className="p-4 space-y-3 text-xs">
-              <p className="text-slate-700">
-                ¿Está seguro de que desea eliminar la asociación{' '}
-                <strong className="font-mono">{deleteTarget.code}</strong>? La salida configurada no será eliminada, solo se retirará su vínculo con este formato.
+              <p className="text-slate-700 leading-relaxed">
+                ¿Confirma que desea desvincular la asociación{' '}
+                <strong className="font-mono">{deleteTarget.code}</strong>?
               </p>
+              <div className="p-2.5 rounded bg-slate-50 border border-slate-200 text-[11px] text-slate-600">
+                <strong>Nota de trazabilidad:</strong> Desvincular retira o finaliza el vínculo entre el formato de destino y la salida configurada sin eliminar ni el formato ni la salida. Si existen corridas o entregas históricas, la asociación pasará a estado <em>Retirada</em> conservando el historial.
+              </div>
               <div className="flex justify-end gap-2 pt-2 border-t border-slate-200">
                 <button
                   type="button"
@@ -1093,12 +1146,12 @@ export const AssociationsMatrixView: React.FC = () => {
                 <button
                   type="button"
                   onClick={() => {
-                    deleteAssociation(deleteTarget.id);
+                    unlinkAssociation(deleteTarget.id);
                     setDeleteTarget(null);
                   }}
                   className="px-3.5 py-1.5 rounded bg-rose-700 text-white font-semibold hover:bg-rose-800 cursor-pointer"
                 >
-                  Eliminar asociación
+                  Confirmar desvinculación
                 </button>
               </div>
             </div>

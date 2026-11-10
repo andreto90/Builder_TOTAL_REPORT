@@ -17,6 +17,13 @@ import {
   resolveSourceExecutionRows,
   validateFileNameAndPackage,
   validateFixedWidthStructure,
+  filterRegulatoryFormats,
+  validateAssociationContext,
+  generateTotaliaFormatRecommendations,
+  checkFormatDuplicateCandidates,
+  evaluateFormatDependencies,
+  evaluateFormatEditImpact,
+  computeOrganismSummaries,
 } from './engine';
 import {
   evaluateCatalogImportImpact,
@@ -28,15 +35,19 @@ import {
   parseStructureDefinitionMatrix,
 } from './fileParser';
 import {
+  ENTITY_TYPES_CATALOG,
   INITIAL_ASSOCIATIONS,
   INITIAL_CATALOG_SOURCE_FORMATS,
   INITIAL_CONFIGURED_OUTPUTS,
   INITIAL_DAQUE_PROFILES,
   INITIAL_DATA_CONTRACTS,
+  INITIAL_EXECUTION_RUNS,
   INITIAL_OUTPUT_TYPES,
+  INITIAL_RECEIVING_ORGANISMS,
   INITIAL_REGULATORY_FORMATS,
+  INITIAL_TRANSMISSION_TYPES,
 } from './seedData';
-import { ConfiguredOutput, DataContract, DataContractField, StructureField } from './types';
+import { ConfiguredOutput, DataContract, DataContractField, StructureField, TransmissionType } from './types';
 
 test('CSV generation reproduces exact PDF reference row: 31-10-2026;000123;Ana Pérez;1234,50 when 2026-10 batch is selected', () => {
   const csvOutput = {
@@ -1099,6 +1110,280 @@ test('Structure design can be drafted and saved even with zero data batches for 
   // Physical download is blocked until batch is loaded
   assert.equal(result.readinessMatrix.downloadAvailabilityStatus.canDownload, false);
 });
+
+test('filterRegulatoryFormats filters correctly by country, entity type, and classification', () => {
+  // Test country filtering
+  const colombiaOnly = filterRegulatoryFormats(INITIAL_REGULATORY_FORMATS, { country: 'Colombia' });
+  assert.equal(colombiaOnly.filtered.every((f) => f.country === 'Colombia'), true);
+  assert.equal(colombiaOnly.filtered.length > 5, true);
+
+  const peruOnly = filterRegulatoryFormats(INITIAL_REGULATORY_FORMATS, { country: 'Perú' });
+  assert.equal(peruOnly.filtered.every((f) => f.country === 'Perú'), true);
+  assert.equal(peruOnly.filtered.length >= 6, true);
+
+  // Test entity type filtering: Establecimientos Bancarios in Colombia
+  const bankFormats = filterRegulatoryFormats(INITIAL_REGULATORY_FORMATS, {
+    country: 'Colombia',
+    entityType: 'Establecimientos Bancarios',
+    classificationStatus: 'Clasificado y validado',
+  });
+  // SFC format 239 applies to banks
+  assert.equal(bankFormats.filtered.some((f) => f.code === '239'), true);
+  // Unclassified format without entity type is excluded from strict bank list
+  assert.equal(bankFormats.filtered.some((f) => f.id === 'FMT-CO-VACIO-01'), false);
+
+  // Test classification filter
+  const pendingOnly = filterRegulatoryFormats(INITIAL_REGULATORY_FORMATS, {
+    classificationStatus: 'Pendiente de clasificación',
+  });
+  assert.equal(pendingOnly.filtered.every((f) => f.classificationStatus === 'Pendiente de clasificación'), true);
+  assert.equal(pendingOnly.filtered.some((f) => f.id === 'FMT-CO-VACIO-01'), true);
+  assert.equal(pendingOnly.filtered.some((f) => f.id === 'FMT-PE-715-PENDIENTE'), true);
+
+  // Test text search matching Peru Nro Interno 410 or DIAN 410
+  const search410 = filterRegulatoryFormats(INITIAL_REGULATORY_FORMATS, { searchQuery: '410' });
+  assert.equal(search410.filtered.some((f) => f.id === 'FMT-PE-410'), true);
+  assert.equal(search410.filtered.some((f) => f.id === 'FMT-CO-DIAN-410'), true);
+});
+
+test('validateAssociationContext blocks activation on unclassified formats and checks compatibility', () => {
+  const unclassifiedFormat = INITIAL_REGULATORY_FORMATS.find((f) => f.id === 'FMT-CO-VACIO-01')!;
+  const csvOutput = INITIAL_CONFIGURED_OUTPUTS[0];
+  const trn = INITIAL_TRANSMISSION_TYPES[0]; // TX-ORDINARIO (CSV, TXT)
+  const outType = INITIAL_OUTPUT_TYPES[0]; // TYPE-CSV-01 (CSV)
+
+  // 1. Trying to save as 'Activa' with unclassified format MUST be blocked
+  const resBlockUnclassified = validateAssociationContext({
+    format: unclassifiedFormat,
+    configuredOutput: csvOutput,
+    outputType: outType,
+    transmissionType: trn,
+    existingAssociations: INITIAL_ASSOCIATIONS,
+    proposedStatus: 'Activa',
+    proposedEnvironment: 'QA',
+    proposedModality: 'Inicial',
+  });
+  assert.equal(resBlockUnclassified.canActivate, false);
+  assert.equal(resBlockUnclassified.blockers.some((b) => b.includes('pendiente de clasificación')), true);
+
+  // 2. Saving as 'Borrador' on unclassified format is allowed with warning
+  const resDraftUnclassified = validateAssociationContext({
+    format: unclassifiedFormat,
+    configuredOutput: csvOutput,
+    outputType: outType,
+    transmissionType: trn,
+    existingAssociations: INITIAL_ASSOCIATIONS,
+    proposedStatus: 'Borrador',
+    proposedEnvironment: 'QA',
+    proposedModality: 'Inicial',
+  });
+  assert.equal(resDraftUnclassified.isValid, true);
+  assert.equal(resDraftUnclassified.warnings.some((w) => w.includes('pendiente de clasificación')), true);
+
+  // 3. Technical family incompatibility: TXT-only transmission with XBRL output
+  const classifiedFormat = INITIAL_REGULATORY_FORMATS.find((f) => f.id === 'FMT-CO-SFC-239')!;
+  const xbrlType = INITIAL_OUTPUT_TYPES.find((t) => t.family === 'XBRL')!;
+  const txtOnlyTransmission: TransmissionType = {
+    id: 'TX-TXT-ONLY',
+    code: 'TX-TXT-01',
+    name: 'Transmisión Plano TXT',
+    modality: 'Envío ordinario / Inicial',
+    description: 'Canal exclusivo para archivos de texto plano',
+    compatibleFamilies: ['TXT'],
+    requiresAntecedentRef: false,
+  };
+  const resFamilyMismatch = validateAssociationContext({
+    format: classifiedFormat,
+    configuredOutput: csvOutput,
+    outputType: xbrlType,
+    transmissionType: txtOnlyTransmission,
+    existingAssociations: INITIAL_ASSOCIATIONS,
+    proposedStatus: 'Borrador',
+    proposedEnvironment: 'QA',
+    proposedModality: 'Inicial',
+  });
+  assert.equal(resFamilyMismatch.isValid, false);
+  assert.equal(resFamilyMismatch.blockers.some((b) => b.includes('Incompatibilidad técnica')), true);
+});
+
+test('generateTotaliaFormatRecommendations provides context-aware guidance for destination formats', () => {
+  const formatSfc = INITIAL_REGULATORY_FORMATS.find((f) => f.id === 'FMT-CO-SFC-239')!;
+  const recommendation = generateTotaliaFormatRecommendations({
+    format: formatSfc,
+    configuredOutputs: INITIAL_CONFIGURED_OUTPUTS,
+    outputTypes: INITIAL_OUTPUT_TYPES,
+    transmissionTypes: INITIAL_TRANSMISSION_TYPES,
+    entityType: 'Establecimientos Bancarios',
+  });
+
+  assert.equal(typeof recommendation.suggestedAction, 'string');
+  assert.equal(recommendation.explanation.length > 10, true);
+  assert.equal(recommendation.requirementsSummary.length > 0, true);
+});
+
+test('computeOrganismSummaries aggregates formats per receiving organism (SFC, DIAN, Fogafín, UIAF, SBS Perú) without inflating by versions', () => {
+  const coSummaries = computeOrganismSummaries({
+    organisms: INITIAL_RECEIVING_ORGANISMS,
+    formats: INITIAL_REGULATORY_FORMATS,
+    associations: INITIAL_ASSOCIATIONS,
+    countryFilter: 'Colombia',
+  });
+
+  const sfc = coSummaries.find((s) => s.organism.code === 'SFC')!;
+  const dian = coSummaries.find((s) => s.organism.code === 'DIAN')!;
+  const fogafin = coSummaries.find((s) => s.organism.code === 'FOGAFIN')!;
+  const uiaf = coSummaries.find((s) => s.organism.code === 'UIAF')!;
+
+  assert.equal(Boolean(sfc && sfc.totalFormats >= 3), true);
+  assert.equal(Boolean(dian && dian.totalFormats >= 4), true);
+  assert.equal(Boolean(fogafin && fogafin.totalFormats >= 1), true);
+  assert.equal(Boolean(uiaf && uiaf.totalFormats >= 2), true);
+
+  // Verify UIAF ROS format distinguishes issuingOrganism (SFC) from receiving regulator (UIAF)
+  const rosFormat = uiaf.formats.find((f) => f.id === 'FMT-CO-UIAF-ROS')!;
+  assert.equal(rosFormat.regulator, 'UIAF - Unidad de Información y Análisis Financiero');
+  assert.equal(rosFormat.issuingOrganism, 'SFC - Superintendencia Financiera de Colombia');
+  assert.equal(rosFormat.reportingModality, 'Por evento');
+
+  const peSummaries = computeOrganismSummaries({
+    organisms: INITIAL_RECEIVING_ORGANISMS,
+    formats: INITIAL_REGULATORY_FORMATS,
+    associations: INITIAL_ASSOCIATIONS,
+    countryFilter: 'Perú',
+  });
+  const sbs = peSummaries.find((s) => s.organism.code === 'SBS-PE')!;
+  assert.equal(Boolean(sbs && sbs.totalFormats >= 6), true);
+});
+
+test('checkFormatDuplicateCandidates blocks exact duplicates within same organism and warns on shared codes across organisms', () => {
+  // 1. Exact duplicate in Colombia DIAN 1001 -> Bloqueante
+  const exactDup = checkFormatDuplicateCandidates(INITIAL_REGULATORY_FORMATS, {
+    jurisdiction: 'Colombia',
+    regulator: 'DIAN',
+    code: '1001',
+    name: 'Pagos o abonos en cuenta',
+  });
+  assert.equal(exactDup.hasExactDuplicate, true);
+
+  // 2. Shared code 410 for a different regulator -> Advertencia, not Bloqueante
+  const sharedCode = checkFormatDuplicateCandidates(INITIAL_REGULATORY_FORMATS, {
+    jurisdiction: 'Colombia',
+    regulator: 'Fogafín - Fondo de Garantías de Instituciones Financieras',
+    code: '410',
+    internalCode: 'FMT-CO-FOGAFIN-410-NEW',
+    name: 'Reporte Especial Fogafín',
+  });
+  assert.equal(sharedCode.hasExactDuplicate, false);
+  assert.equal(sharedCode.hasWarningCandidates, true);
+
+  // 3. Format without official numeric code (identified by name/annex) is allowed with unique internalCode
+  const noCodeFmt = checkFormatDuplicateCandidates(INITIAL_REGULATORY_FORMATS, {
+    jurisdiction: 'Colombia',
+    regulator: 'Fogafín - Fondo de Garantías de Instituciones Financieras',
+    code: '',
+    internalCode: 'FMT-CO-FOGAFIN-RESERVAS',
+    name: 'Anexo de Reservas de Liquidez Garantizada',
+  });
+  assert.equal(noCodeFmt.hasExactDuplicate, false);
+});
+
+test('evaluateFormatDependencies blocks physical deletion when associations/runs exist and allows deletion on clean format', () => {
+  // 1. Format with associations and runs (FMT-DEMO-01) CANNOT be deleted
+  const fmtWithDeps = INITIAL_REGULATORY_FORMATS.find((f) => f.id === 'FMT-DEMO-01')!;
+  const depCheck1 = evaluateFormatDependencies({
+    format: fmtWithDeps,
+    associations: INITIAL_ASSOCIATIONS,
+    executionRuns: INITIAL_EXECUTION_RUNS,
+  });
+  assert.equal(depCheck1.canDelete, false);
+  assert.equal(depCheck1.recommendedAction, 'Desactivar formato');
+  assert.equal(depCheck1.linkedAssociations.length > 0, true);
+
+  // 2. Clean format without associations, runs, or multiple versions CAN be deleted
+  const fmtClean = INITIAL_REGULATORY_FORMATS.find((f) => f.id === 'FMT-CO-FOGAFIN-FDI')!;
+  const depCheck2 = evaluateFormatDependencies({
+    format: fmtClean,
+    associations: INITIAL_ASSOCIATIONS,
+    executionRuns: INITIAL_EXECUTION_RUNS,
+  });
+  assert.equal(depCheck2.canDelete, true);
+  assert.equal(depCheck2.recommendedAction, 'Eliminar formato');
+});
+
+test('evaluateFormatEditImpact distinguishes descriptive correction from specification/applicability change', () => {
+  const orig = INITIAL_REGULATORY_FORMATS.find((f) => f.id === 'FMT-DEMO-01')!;
+
+  // 1. Descriptive edit only (description/obligation text)
+  const descEdited = {
+    ...orig,
+    description: 'Descripción actualizada para mayor claridad documental.',
+  };
+  const descImpact = evaluateFormatEditImpact({
+    original: orig,
+    updated: descEdited,
+    associations: INITIAL_ASSOCIATIONS,
+    configuredOutputs: INITIAL_CONFIGURED_OUTPUTS,
+  });
+  assert.equal(descImpact.changeClassification, 'Corrección descriptiva');
+  assert.equal(descImpact.requiresNewVersion, false);
+
+  // 2. Specification / validity / applicability change
+  const structEdited = {
+    ...orig,
+    normativeVersion: 'v2027.1',
+    periodicity: 'Trimestral',
+  };
+  const structImpact = evaluateFormatEditImpact({
+    original: orig,
+    updated: structEdited,
+    associations: INITIAL_ASSOCIATIONS,
+    configuredOutputs: INITIAL_CONFIGURED_OUTPUTS,
+  });
+  assert.equal(
+    structImpact.changeClassification,
+    'Cambio de especificación, vigencia o aplicabilidad'
+  );
+  assert.equal(structImpact.requiresNewVersion, true);
+  assert.equal(structImpact.impactedAssociations.length > 0, true);
+  assert.equal(structImpact.impactedOutputs.length > 0, true);
+});
+
+test('validateAssociationContext blocks activating operational associations on inactive or future-validity formats', () => {
+  const futureFormat = INITIAL_REGULATORY_FORMATS.find((f) => f.id === 'FMT-PE-510-FUTURO')!;
+  const csvOutput = INITIAL_CONFIGURED_OUTPUTS[0];
+  const trn = INITIAL_TRANSMISSION_TYPES[0];
+  const outType = INITIAL_OUTPUT_TYPES[0];
+
+  // Future validity format cannot be activated as 'Activa'
+  const resFutureActive = validateAssociationContext({
+    format: futureFormat,
+    configuredOutput: csvOutput,
+    outputType: outType,
+    transmissionType: trn,
+    existingAssociations: INITIAL_ASSOCIATIONS,
+    proposedStatus: 'Activa',
+    proposedEnvironment: 'QA',
+    proposedModality: 'Inicial',
+  });
+  assert.equal(resFutureActive.canActivate, false);
+  assert.equal(resFutureActive.blockers.some((b) => b.includes('Vigencia futura')), true);
+
+  // Inactive format cannot be activated as 'Activa'
+  const inactiveFormat = { ...INITIAL_REGULATORY_FORMATS[0], lifecycleStatus: 'Inactivo' as const };
+  const resInactive = validateAssociationContext({
+    format: inactiveFormat,
+    configuredOutput: csvOutput,
+    outputType: outType,
+    transmissionType: trn,
+    existingAssociations: INITIAL_ASSOCIATIONS,
+    proposedStatus: 'Activa',
+    proposedEnvironment: 'QA',
+    proposedModality: 'Inicial',
+  });
+  assert.equal(resInactive.canActivate, false);
+  assert.equal(resInactive.blockers.some((b) => b.includes('Formato desactivado')), true);
+});
+
 
 
 
