@@ -7,6 +7,7 @@ import {
   Edit3,
   Eye,
   FileCode2,
+  FileText,
   GitBranch,
   Link2,
   Plus,
@@ -23,6 +24,7 @@ import {
   TechnicalFamily,
 } from '../domain/types';
 import { HelpTooltip } from './HelpTooltip';
+import { generateAndDownloadWordManual } from '../utils/generateWordManual';
 
 export const DashboardCatalogView: React.FC = () => {
   const {
@@ -500,6 +502,66 @@ export const DashboardCatalogView: React.FC = () => {
           >
             <Download className="w-3.5 h-3.5 text-slate-600" />
             Exportar JSON
+          </button>
+          <button
+            type="button"
+            onClick={async () => {
+              try {
+                const response = await fetch('/Manual_Usuario_Builder_Salidas_Regulatorias.pdf');
+                if (!response.ok) throw new Error('Network response was not ok');
+                const blob = await response.blob();
+                const url = window.URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = 'Manual_Usuario_Builder_Salidas_Regulatorias.pdf';
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                window.URL.revokeObjectURL(url);
+              } catch (e) {
+                const a = document.createElement('a');
+                a.href = '/Manual_Usuario_Builder_Salidas_Regulatorias.pdf';
+                a.download = 'Manual_Usuario_Builder_Salidas_Regulatorias.pdf';
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+              }
+            }}
+            className="inline-flex items-center gap-1.5 px-3 py-2 rounded text-xs font-semibold bg-emerald-50 text-emerald-950 border border-emerald-300 hover:bg-emerald-100 transition-colors cursor-pointer"
+            title="Descargar Manual de Usuario en PDF"
+          >
+            <FileText className="w-3.5 h-3.5 text-emerald-700" />
+            Descargar Manual
+          </button>
+          <button
+            type="button"
+            onClick={async () => {
+              try {
+                const response = await fetch('/Propuesta_Reg_Builder_Especificacion_Desarrollo_v1_3.pdf');
+                if (!response.ok) throw new Error('Network response was not ok');
+                const blob = await response.blob();
+                const url = window.URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = 'Propuesta_Reg_Builder_Especificacion_Desarrollo_v1_3.pdf';
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                window.URL.revokeObjectURL(url);
+              } catch (e) {
+                const a = document.createElement('a');
+                a.href = '/Propuesta_Reg_Builder_Especificacion_Desarrollo_v1_3.pdf';
+                a.download = 'Propuesta_Reg_Builder_Especificacion_Desarrollo_v1_3.pdf';
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+              }
+            }}
+            className="inline-flex items-center gap-1.5 px-3 py-2 rounded text-xs font-semibold bg-blue-50 text-blue-950 border border-blue-300 hover:bg-blue-100 transition-colors cursor-pointer"
+            title="Descargar Propuesta de Diseño y Arquitectura para Desarrollo en PDF"
+          >
+            <FileText className="w-3.5 h-3.5 text-blue-700" />
+            Propuesta de Diseño
           </button>
           <button
             type="button"

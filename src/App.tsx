@@ -6,6 +6,7 @@
 import React from 'react';
 import {
   AlertCircle,
+  BookOpen,
   CheckCircle2,
   Database,
   FileSpreadsheet,
@@ -24,6 +25,7 @@ import {
   useConfigurator,
 } from './context/ConfiguratorContext';
 import { UserRole } from './domain/types';
+import { UserManualModal } from './components/UserManualModal';
 import { DashboardCatalogView } from './components/DashboardCatalogView';
 import { OutputTypesCatalogView } from './components/OutputTypesCatalogView';
 import { VisualOutputBuilderView } from './components/VisualOutputBuilderView';

@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertCircle,
   AlertTriangle,
@@ -143,8 +143,11 @@ export const VisualOutputBuilderView: React.FC = () => {
   );
   const [guidedRuleMessage, setGuidedRuleMessage] = useState<string>('');
 
+  const isDraftDirtyRef = useRef<boolean>(false);
+
   // Sync local draft when selectedOutputId changes or when status transitions externally
   useEffect(() => {
+    isDraftDirtyRef.current = false;
     setDraft(currentStoredOutput);
     if (
       currentStoredOutput.fields.length > 0 &&
@@ -156,20 +159,27 @@ export const VisualOutputBuilderView: React.FC = () => {
 
   const isImmutable = draft.status === 'Publicada' || draft.status === 'Aprobada';
 
-  // Helper that updates local draft AND auto-persists to context if editable
+  // Helper that updates local draft (pure state updater without side effects)
   const updateDraft = (updater: (prev: ConfiguredOutput) => ConfiguredOutput) => {
+    isDraftDirtyRef.current = true;
     setDraft((prev) => {
       const next = updater(prev);
-      const withUpdatedFingerprint: ConfiguredOutput = {
+      return {
         ...next,
         fingerprint: `sha256:${next.code.toLowerCase()}_v${next.version.replace('.', '_')}_${next.fields.length}f_${next.validationRules.length}r`,
       };
-      if (prev.status === 'Borrador' || prev.status === 'En revisión') {
-        saveConfiguredOutput(withUpdatedFingerprint, true);
-      }
-      return withUpdatedFingerprint;
     });
   };
+
+  // Auto-persist local draft to context if editable (in an effect, never inside setState updater!)
+  useEffect(() => {
+    if (isDraftDirtyRef.current) {
+      if (draft.status === 'Borrador' || draft.status === 'En revisión') {
+        saveConfiguredOutput(draft, true);
+      }
+      isDraftDirtyRef.current = false;
+    }
+  }, [draft, saveConfiguredOutput]);
 
   const selectedOutputType = useMemo(
     () => outputTypes.find((t) => t.id === draft.outputTypeId) || outputTypes[0],
