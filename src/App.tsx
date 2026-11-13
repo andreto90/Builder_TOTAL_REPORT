@@ -36,9 +36,7 @@ import { TotaliaAssistantView } from './components/TotaliaAssistantView';
 import { ExecutionSimulatorView } from './components/ExecutionSimulatorView';
 import { HelpTooltip } from './components/HelpTooltip';
 import { getCutoffDateForPeriod } from './domain/engine';
-
-const DRIVE_LOGO_FALLBACK_URL =
-  'https://lh3.googleusercontent.com/d/1J9Vz7xITde6OJueH7t3h4GMC6Kii8GWm';
+import { DRIVE_LOGO_FALLBACK_URL, TotalReportLogo } from './components/TotalReportLogo';
 
 const NAV_ITEMS: {
   id: ActiveModuleView;
@@ -157,17 +155,7 @@ const EnterpriseWorkspaceShell: React.FC = () => {
           </button>
 
           <div className="flex items-center gap-2.5">
-            <img
-              src="/logo-total-report.png"
-              onError={(e) => {
-                const target = e.currentTarget;
-                if (target.src !== DRIVE_LOGO_FALLBACK_URL) {
-                  target.src = DRIVE_LOGO_FALLBACK_URL;
-                }
-              }}
-              alt="Logo TÓTAL REPORT®"
-              className="w-10 h-10 object-contain shrink-0 drop-shadow-xs"
-            />
+            <TotalReportLogo className="w-10 h-10 object-contain shrink-0 drop-shadow-xs" />
             <div>
               <div className="flex items-center gap-2">
                 <span className="font-bold text-sm tracking-tight">TÓTAL REPORT®</span>

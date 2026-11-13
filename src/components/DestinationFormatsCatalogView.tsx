@@ -16,6 +16,11 @@ import {
   computeOrganismSummaries,
 } from '../domain/engine';
 import {
+  AMERICAS_AND_EUROPE_COUNTRIES,
+  resolveRegulatorsForCountry,
+} from '../domain/jurisdictionsCatalog';
+import { TotalReportLogo } from './TotalReportLogo';
+import {
   Search,
   Filter,
   HelpCircle,
@@ -144,8 +149,8 @@ export const DestinationFormatsCatalogView: React.FC<DestinationFormatsCatalogVi
   // Sub-view mode inside Option D Tab 1: 'catalog' vs 'by_organism'
   const [catalogSubMode, setCatalogSubMode] = useState<'catalog' | 'by_organism'>('catalog');
 
-  // Independent & combinable filters
-  const [selectedCountry, setSelectedCountry] = useState<'ALL' | 'Colombia' | 'Perú'>(
+  // Independent & combinable filters (supports all Americas & Europe countries)
+  const [selectedCountry, setSelectedCountry] = useState<string>(
     activeEntityContext.country
   );
   const [selectedRegulator, setSelectedRegulator] = useState<string>('ALL');
@@ -184,6 +189,46 @@ export const DestinationFormatsCatalogView: React.FC<DestinationFormatsCatalogVi
     setSearchQuery('');
   };
 
+  // Expanded organisms catalog combining custom/seed organisms with Americas & Europe directory
+  const allCatalogOrganisms = useMemo<ReceivingOrganismDefinition[]>(() => {
+    const map = new Map<string, ReceivingOrganismDefinition>();
+    for (const org of receivingOrganisms) {
+      map.set(`${org.country}::${org.name.toLowerCase()}`, org);
+    }
+    for (const entry of AMERICAS_AND_EUROPE_COUNTRIES) {
+      for (const reg of entry.regulators) {
+        const key = `${entry.country}::${reg.name.toLowerCase()}`;
+        const existingByShort = Array.from(map.values()).find(
+          (o) =>
+            o.country === entry.country &&
+            (o.shortName.toLowerCase() === reg.shortName.toLowerCase() ||
+              o.code.toLowerCase() === reg.shortName.toLowerCase())
+        );
+        if (!map.has(key) && !existingByShort) {
+          const slug = entry.country
+            .normalize('NFD')
+            .replace(/[\u0300-\u036f]/g, '')
+            .replace(/[^A-Z0-9]/gi, '')
+            .slice(0, 4)
+            .toUpperCase();
+          map.set(key, {
+            id: `ORG-JUR-${slug}-${reg.shortName.replace(/[^A-Z0-9]/gi, '').toUpperCase()}`,
+            code: reg.shortName,
+            name: reg.name,
+            shortName: `${reg.shortName} — ${reg.name}`,
+            country: entry.country,
+            description: reg.scope,
+            officialUrl: '',
+            referenceUrls: [],
+            consultationDate: '2026-11-12',
+            isSystemDefault: true,
+          });
+        }
+      }
+    }
+    return Array.from(map.values());
+  }, [receivingOrganisms]);
+
   // Available entity types for selected country
   const availableEntityTypes = useMemo(() => {
     const fromCat = entityTypes
@@ -197,27 +242,36 @@ export const DestinationFormatsCatalogView: React.FC<DestinationFormatsCatalogVi
 
   // Available receiving organisms for selected country
   const availableRegulators = useMemo(() => {
-    const fromOrgs = receivingOrganisms
+    const fromOrgs = allCatalogOrganisms
       .filter((o) => selectedCountry === 'ALL' || o.country === selectedCountry)
       .map((o) => o.name);
     const fromFormats = regulatoryFormats
       .filter((f) => selectedCountry === 'ALL' || (f.country || f.jurisdiction) === selectedCountry)
       .map((f) => f.regulator);
     return Array.from(new Set([...fromOrgs, ...fromFormats])).sort();
-  }, [receivingOrganisms, regulatoryFormats, selectedCountry]);
+  }, [allCatalogOrganisms, regulatoryFormats, selectedCountry]);
 
   // Organism summaries for "Formatos por organismo receptor"
-  const organismSummaries = useMemo(
-    () =>
-      computeOrganismSummaries({
-        organisms: receivingOrganisms,
-        formats: regulatoryFormats,
-        associations,
-        countryFilter: selectedCountry,
-        entityTypeFilter: selectedEntityType,
-      }),
-    [receivingOrganisms, regulatoryFormats, associations, selectedCountry, selectedEntityType]
-  );
+  const organismSummaries = useMemo(() => {
+    const baseOrgs =
+      selectedCountry === 'ALL'
+        ? allCatalogOrganisms.filter((org) =>
+            regulatoryFormats.some(
+              (f) =>
+                (f.country || f.jurisdiction) === org.country &&
+                (f.regulator === org.name ||
+                  f.regulator.toLowerCase().includes(org.code.toLowerCase()))
+            )
+          )
+        : allCatalogOrganisms;
+    return computeOrganismSummaries({
+      organisms: baseOrgs,
+      formats: regulatoryFormats,
+      associations,
+      countryFilter: selectedCountry,
+      entityTypeFilter: selectedEntityType,
+    });
+  }, [allCatalogOrganisms, regulatoryFormats, associations, selectedCountry, selectedEntityType]);
 
   // Filtered formats result
   const filterResult = useMemo(
@@ -453,7 +507,7 @@ export const DestinationFormatsCatalogView: React.FC<DestinationFormatsCatalogVi
   // ============================================================================
   // ADD FORMAT MODAL STATE & HANDLERS ("Agregar formato")
   // ============================================================================
-  const [addFmtCountry, setAddFmtCountry] = useState<'Colombia' | 'Perú'>('Colombia');
+  const [addFmtCountry, setAddFmtCountry] = useState<string>('Colombia');
   const [addFmtRegulator, setAddFmtRegulator] = useState<string>('SFC');
   const [addFmtIssuingOrganism, setAddFmtIssuingOrganism] = useState<string>('');
   const [addFmtCode, setAddFmtCode] = useState<string>('');
@@ -492,18 +546,25 @@ export const DestinationFormatsCatalogView: React.FC<DestinationFormatsCatalogVi
   const [addFmtError, setAddFmtError] = useState<string | null>(null);
 
   const handleOpenAddFormatModal = (
-    presetCountry?: 'Colombia' | 'Perú',
+    presetCountry?: string,
     presetRegulator?: string
   ) => {
     const c = presetCountry || (selectedCountry === 'ALL' ? 'Colombia' : selectedCountry);
+    const iso = c
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/[^A-Za-z0-9]/g, '')
+      .slice(0, 3)
+      .toUpperCase();
+    const countryRegs = resolveRegulatorsForCountry(c, receivingOrganisms);
     setAddFmtCountry(c);
     setAddFmtRegulator(
-      presetRegulator || (c === 'Colombia' ? 'SFC' : 'SBS Perú')
+      presetRegulator || countryRegs[0]?.name || 'Autoridad supervisora local'
     );
     setAddFmtIssuingOrganism('');
     setAddFmtCode('');
     const suffix = Math.floor(100 + Math.random() * 900);
-    setAddFmtInternalCode(`FMT-${c === 'Colombia' ? 'CO' : 'PE'}-REG-${suffix}`);
+    setAddFmtInternalCode(`FMT-${iso}-REG-${suffix}`);
     setAddFmtInternalNumber('');
     setAddFmtAnnexType('');
     setAddFmtName('');
@@ -594,9 +655,15 @@ export const DestinationFormatsCatalogView: React.FC<DestinationFormatsCatalogVi
       }
     }
 
+    const isoCode = addFmtCountry
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/[^A-Za-z0-9]/g, '')
+      .slice(0, 3)
+      .toUpperCase();
     const internalId =
       addFmtInternalCode.trim() ||
-      `FMT-${addFmtCountry === 'Colombia' ? 'CO' : 'PE'}-${Date.now().toString().slice(-4)}`;
+      `FMT-${isoCode}-${Date.now().toString().slice(-4)}`;
 
     const newFormat: RegulatoryFormat = {
       id: internalId,
@@ -885,7 +952,7 @@ export const DestinationFormatsCatalogView: React.FC<DestinationFormatsCatalogVi
   // ============================================================================
   // ADD RECEIVING ORGANISM MODAL STATE
   // ============================================================================
-  const [newOrgCountry, setNewOrgCountry] = useState<'Colombia' | 'Perú'>('Colombia');
+  const [newOrgCountry, setNewOrgCountry] = useState<string>('Colombia');
   const [newOrgCode, setNewOrgCode] = useState<string>('');
   const [newOrgName, setNewOrgName] = useState<string>('');
   const [newOrgDesc, setNewOrgDesc] = useState<string>('');
@@ -894,8 +961,14 @@ export const DestinationFormatsCatalogView: React.FC<DestinationFormatsCatalogVi
   const handleCreateOrganism = (e: React.FormEvent) => {
     e.preventDefault();
     if (!newOrgCode.trim() || !newOrgName.trim()) return;
+    const isoCode = newOrgCountry
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/[^A-Za-z0-9]/g, '')
+      .slice(0, 3)
+      .toUpperCase();
     const created: ReceivingOrganismDefinition = {
-      id: `ORG-${newOrgCountry === 'Colombia' ? 'CO' : 'PE'}-${newOrgCode
+      id: `ORG-${isoCode}-${newOrgCode
         .trim()
         .toUpperCase()}`,
       code: newOrgCode.trim().toUpperCase(),
@@ -906,7 +979,7 @@ export const DestinationFormatsCatalogView: React.FC<DestinationFormatsCatalogVi
         newOrgDesc.trim() || `Organismo receptor registrado en ${newOrgCountry}.`,
       officialUrl: newOrgUrl.trim() || 'https://www.gov.co',
       referenceUrls: newOrgUrl.trim() ? [newOrgUrl.trim()] : [],
-      consultationDate: '2026-11-10',
+      consultationDate: '2026-11-12',
       isSystemDefault: false,
     };
     addReceivingOrganism(created);
@@ -996,9 +1069,9 @@ export const DestinationFormatsCatalogView: React.FC<DestinationFormatsCatalogVi
 
       {/* Top Concept Separation & Mode Switcher Bar */}
       <div className="bg-white border border-slate-200 rounded-md p-4 shadow-xs space-y-3">
-        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 border-b border-slate-100 pb-3">
-          <div>
-            <div className="flex items-center gap-2">
+        <div className="flex flex-col gap-3 border-b border-slate-100 pb-3">
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
               <h3 className="text-sm font-bold text-slate-900">
                 Catálogo Único de Formatos Regulatorios y Consulta por Organismo Receptor
               </h3>
@@ -1008,13 +1081,13 @@ export const DestinationFormatsCatalogView: React.FC<DestinationFormatsCatalogVi
             </div>
             <p className="text-xs text-slate-600 mt-0.5">
               Consulte, agregue, edite, versione, desactive o asocie formatos regulatorios diferenciando siempre{' '}
-              <strong>Organismo receptor</strong> (SFC, DIAN, Fogafín, UIAF, SBS Perú),{' '}
+              <strong>Organismo receptor</strong> (SFC, DIAN, Fogafín, UIAF, SBS Perú y supervisores de América y Europa),{' '}
               <strong>Tipo de entidad reportante</strong>, <strong>Formato de destino</strong> y{' '}
               <strong>Salida configurada</strong>.
             </p>
           </div>
 
-          <div className="flex flex-wrap items-center gap-2 shrink-0">
+          <div className="flex flex-wrap items-center gap-2">
             {/* Sub-mode Toggle: General Catalog vs Formats by Receiving Organism */}
             <div className="inline-flex rounded-md border border-slate-300 bg-slate-100 p-0.5">
               <button
@@ -1060,9 +1133,9 @@ export const DestinationFormatsCatalogView: React.FC<DestinationFormatsCatalogVi
                 setTotaliaTab('prepare');
                 setTotaliaModalFormat(filteredFormats[0] || regulatoryFormats[0]);
               }}
-              className="px-3 py-1.5 rounded bg-indigo-50 hover:bg-indigo-100 text-indigo-900 border border-indigo-200 text-xs font-bold flex items-center gap-1.5 cursor-pointer"
+              className="px-3 py-1.5 rounded bg-[#0F1F38] hover:bg-[#1E4E8C] text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer"
             >
-              <Sparkles className="w-3.5 h-3.5 text-indigo-700" />
+              <TotalReportLogo className="w-4 h-4 object-contain" alt="Logo TOTALiA®" />
               Asistencia TOTALiA®
             </button>
           </div>
@@ -1131,21 +1204,35 @@ export const DestinationFormatsCatalogView: React.FC<DestinationFormatsCatalogVi
                 />
               </h4>
               <p className="text-xs text-slate-600 mt-0.5">
-                Seleccione Colombia o Perú y consulte las fichas de cada organismo receptor. Las métricas contabilizan formatos únicos registrados (sin inflar por versiones históricas).
+                Seleccione cualquier jurisdicción de América o Europa y consulte las fichas de cada organismo receptor. Las métricas contabilizan formatos únicos registrados (sin inflar por versiones históricas).
               </p>
             </div>
             <div className="flex items-center gap-2">
               <select
                 aria-label="Filtrar organismos por país"
                 value={selectedCountry}
-                onChange={(e) =>
-                  setSelectedCountry(e.target.value as 'ALL' | 'Colombia' | 'Perú')
-                }
-                className="border border-slate-300 rounded px-2.5 py-1.5 text-xs font-semibold bg-white text-slate-800"
+                onChange={(e) => setSelectedCountry(e.target.value)}
+                className="border border-slate-300 rounded px-2.5 py-1.5 text-xs font-semibold bg-white text-slate-800 max-w-xs"
               >
-                <option value="ALL">Todos los países (Colombia y Perú)</option>
-                <option value="Colombia">Colombia (SFC, DIAN, Fogafín, UIAF...)</option>
-                <option value="Perú">Perú (SBS Perú, BCRP...)</option>
+                <option value="ALL">Todos los países (América y Europa con formatos)</option>
+                <optgroup label="América">
+                  {AMERICAS_AND_EUROPE_COUNTRIES.filter((c) => c.region === 'América').map(
+                    (c) => (
+                      <option key={c.country} value={c.country}>
+                        {c.country} ({c.regulators.length} org.)
+                      </option>
+                    )
+                  )}
+                </optgroup>
+                <optgroup label="Europa">
+                  {AMERICAS_AND_EUROPE_COUNTRIES.filter((c) => c.region === 'Europa').map(
+                    (c) => (
+                      <option key={c.country} value={c.country}>
+                        {c.country} ({c.regulators.length} org.)
+                      </option>
+                    )
+                  )}
+                </optgroup>
               </select>
               {canManageCatalog && (
                 <button
@@ -1310,16 +1397,32 @@ export const DestinationFormatsCatalogView: React.FC<DestinationFormatsCatalogVi
                   aria-label="Filtrar por país"
                   value={selectedCountry}
                   onChange={(e) => {
-                    const nextCountry = e.target.value as 'ALL' | 'Colombia' | 'Perú';
+                    const nextCountry = e.target.value;
                     setSelectedCountry(nextCountry);
                     setSelectedEntityType('ALL');
                     setSelectedRegulator('ALL');
                   }}
                   className="w-full border border-slate-300 rounded px-2.5 py-1.5 text-xs bg-white font-semibold text-slate-900"
                 >
-                  <option value="ALL">Todos (Colombia y Perú)</option>
-                  <option value="Colombia">Colombia</option>
-                  <option value="Perú">Perú</option>
+                  <option value="ALL">Todos (América y Europa)</option>
+                  <optgroup label="América">
+                    {AMERICAS_AND_EUROPE_COUNTRIES.filter((c) => c.region === 'América').map(
+                      (c) => (
+                        <option key={c.country} value={c.country}>
+                          {c.country}
+                        </option>
+                      )
+                    )}
+                  </optgroup>
+                  <optgroup label="Europa">
+                    {AMERICAS_AND_EUROPE_COUNTRIES.filter((c) => c.region === 'Europa').map(
+                      (c) => (
+                        <option key={c.country} value={c.country}>
+                          {c.country}
+                        </option>
+                      )
+                    )}
+                  </optgroup>
                 </select>
               </div>
 
@@ -1446,6 +1549,7 @@ export const DestinationFormatsCatalogView: React.FC<DestinationFormatsCatalogVi
                   <option value="Diaria">Diaria</option>
                   <option value="Semanal">Semanal</option>
                   <option value="Mensual">Mensual</option>
+                  <option value="Bimestral">Bimestral</option>
                   <option value="Trimestral">Trimestral</option>
                   <option value="Semestral">Semestral</option>
                   <option value="Anual">Anual</option>
@@ -2398,14 +2502,31 @@ export const DestinationFormatsCatalogView: React.FC<DestinationFormatsCatalogVi
                     aria-label="País del nuevo formato"
                     value={addFmtCountry}
                     onChange={(e) => {
-                      const c = e.target.value as 'Colombia' | 'Perú';
+                      const c = e.target.value;
+                      const countryRegs = resolveRegulatorsForCountry(c, receivingOrganisms);
                       setAddFmtCountry(c);
-                      setAddFmtRegulator(c === 'Colombia' ? 'SFC' : 'SBS Perú');
+                      setAddFmtRegulator(countryRegs[0]?.name || 'Autoridad supervisora local');
                     }}
                     className="w-full border border-slate-300 rounded px-2.5 py-1.5 bg-white font-semibold"
                   >
-                    <option value="Colombia">Colombia</option>
-                    <option value="Perú">Perú</option>
+                    <optgroup label="América">
+                      {AMERICAS_AND_EUROPE_COUNTRIES.filter((c) => c.region === 'América').map(
+                        (c) => (
+                          <option key={c.country} value={c.country}>
+                            {c.country}
+                          </option>
+                        )
+                      )}
+                    </optgroup>
+                    <optgroup label="Europa">
+                      {AMERICAS_AND_EUROPE_COUNTRIES.filter((c) => c.region === 'Europa').map(
+                        (c) => (
+                          <option key={c.country} value={c.country}>
+                            {c.country}
+                          </option>
+                        )
+                      )}
+                    </optgroup>
                   </select>
                 </div>
 
@@ -2419,13 +2540,11 @@ export const DestinationFormatsCatalogView: React.FC<DestinationFormatsCatalogVi
                     onChange={(e) => setAddFmtRegulator(e.target.value)}
                     className="w-full border border-slate-300 rounded px-2.5 py-1.5 bg-white font-semibold"
                   >
-                    {receivingOrganisms
-                      .filter((o) => o.country === addFmtCountry)
-                      .map((o) => (
-                        <option key={o.id} value={o.name}>
-                          {o.code} — {o.shortName}
-                        </option>
-                      ))}
+                    {resolveRegulatorsForCountry(addFmtCountry, receivingOrganisms).map((o) => (
+                      <option key={`${addFmtCountry}-${o.shortName}-${o.name}`} value={o.name}>
+                        {o.shortName} — {o.name}
+                      </option>
+                    ))}
                   </select>
                 </div>
 
@@ -3264,13 +3383,27 @@ export const DestinationFormatsCatalogView: React.FC<DestinationFormatsCatalogVi
                 <label className="block font-bold text-slate-700 mb-1">País *</label>
                 <select
                   value={newOrgCountry}
-                  onChange={(e) =>
-                    setNewOrgCountry(e.target.value as 'Colombia' | 'Perú')
-                  }
+                  onChange={(e) => setNewOrgCountry(e.target.value)}
                   className="w-full border border-slate-300 rounded px-2.5 py-1.5 bg-white"
                 >
-                  <option value="Colombia">Colombia</option>
-                  <option value="Perú">Perú</option>
+                  <optgroup label="América">
+                    {AMERICAS_AND_EUROPE_COUNTRIES.filter((c) => c.region === 'América').map(
+                      (c) => (
+                        <option key={c.country} value={c.country}>
+                          {c.country}
+                        </option>
+                      )
+                    )}
+                  </optgroup>
+                  <optgroup label="Europa">
+                    {AMERICAS_AND_EUROPE_COUNTRIES.filter((c) => c.region === 'Europa').map(
+                      (c) => (
+                        <option key={c.country} value={c.country}>
+                          {c.country}
+                        </option>
+                      )
+                    )}
+                  </optgroup>
                 </select>
               </div>
               <div>

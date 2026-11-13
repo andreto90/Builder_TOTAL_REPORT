@@ -15,8 +15,10 @@ import {
   RegulatoryFormat,
   SourceExecutionBatch,
   StructureField,
+  TechnicalFamily,
   TransmissionType,
 } from './types';
+import { AMERICAS_AND_EUROPE_COUNTRIES } from './jurisdictionsCatalog';
 
 export interface FileNameContext {
   entidad: string;
@@ -3038,7 +3040,7 @@ export function auditCatalogImportEntries(entries: CatalogSourceFormatEntry[]): 
  * Filter criteria for destination regulatory formats
  */
 export interface FormatFilterCriteria {
-  country?: 'Colombia' | 'Perú' | 'ALL';
+  country?: string;
   entityType?: string; // e.g. "Establecimientos Bancarios" or "ALL"
   regulator?: string; // e.g. "SFC", "DIAN", "SBS Perú", or "ALL"
   periodicity?: string; // e.g. "Mensual", "Trimestral", or "ALL"
@@ -3244,7 +3246,7 @@ export function validateAssociationContext(params: {
   configuredOutput?: ConfiguredOutput;
   outputType?: OutputType;
   entityType?: string;
-  country?: 'Colombia' | 'Perú';
+  country?: string;
   existingAssociations: FormatOutputAssociation[];
   currentAssociationId?: string;
   proposedStatus: 'Activa' | 'Instalada sin activar' | 'Borrador';
@@ -3542,7 +3544,7 @@ export function generateTotaliaFormatRecommendations(params: {
 export function checkFormatDuplicateCandidates(
   existingFormats: RegulatoryFormat[],
   candidate: {
-    jurisdiction?: 'Colombia' | 'Perú';
+    jurisdiction?: string;
     regulator?: string;
     code?: string;
     internalCode?: string;
@@ -3868,7 +3870,7 @@ export function computeOrganismSummaries(params: {
   organisms: ReceivingOrganismDefinition[];
   formats: RegulatoryFormat[];
   associations: FormatOutputAssociation[];
-  countryFilter?: 'Colombia' | 'Perú' | 'ALL';
+  countryFilter?: string;
   entityTypeFilter?: string;
 }): OrganismSummaryCard[] {
   const {
@@ -3885,10 +3887,14 @@ export function computeOrganismSummaries(params: {
 
   return filteredOrganisms.map((org) => {
     const orgFormats = formats.filter((f) => {
+      const fmtCountry = f.country || f.jurisdiction;
+      if (fmtCountry !== org.country) return false;
       const sameOrg =
         f.regulator === org.name ||
         f.regulator === org.shortName ||
-        f.regulator === org.code;
+        f.regulator === org.code ||
+        f.regulator.toLowerCase().startsWith(`${org.shortName.toLowerCase()} - `) ||
+        org.name.toLowerCase().startsWith(`${f.regulator.toLowerCase()} - `);
       if (!sameOrg) return false;
       if (entityTypeFilter !== 'ALL') {
         return (
@@ -3935,5 +3941,883 @@ export function computeOrganismSummaries(params: {
     };
   });
 }
+
+function stripDiacritics(input: string): string {
+  return (input || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '');
+}
+
+/**
+ * Derives a clean, collision-free uppercase output identifier code from a functional output name.
+ */
+export function buildAutoOutputCode(name: string, existingCodes: string[] = []): string {
+  const normalizedSet = new Set(existingCodes.map((c) => c.trim().toUpperCase()));
+  const stopWords = new Set(['DE', 'DEL', 'LA', 'LAS', 'EL', 'LOS', 'Y', 'O', 'PARA', 'POR', 'EN', 'CON', 'A']);
+  const tokens = stripDiacritics(name)
+    .toUpperCase()
+    .replace(/[^A-Z0-9\s]/g, ' ')
+    .split(/\s+/)
+    .filter((w) => w.length > 0 && !stopWords.has(w));
+
+  const coreTokens = tokens.slice(0, 3);
+  const rawSlug = coreTokens.length > 0 ? coreTokens.join('-') : 'NUEVA';
+  const trimmedSlug = rawSlug.slice(0, 18).replace(/-+$/, '');
+  const baseCode = trimmedSlug.startsWith('SAL-') ? trimmedSlug : `SAL-${trimmedSlug}`;
+
+  if (!normalizedSet.has(baseCode)) {
+    return baseCode;
+  }
+  for (let i = 2; i < 100; i++) {
+    const candidate = `${baseCode}-${String(i).padStart(2, '0')}`;
+    if (!normalizedSet.has(candidate)) {
+      return candidate;
+    }
+  }
+  return `${baseCode}-${Date.now().toString().slice(-4)}`;
+}
+
+/**
+ * Derives a valid snake_case technical field identifier from a human label, avoiding collisions.
+ */
+export function buildAutoTechnicalName(
+  label: string,
+  existingTechnicalNames: string[] = []
+): string {
+  const existingSet = new Set(existingTechnicalNames.map((n) => n.trim().toLowerCase()));
+  let slug = stripDiacritics(label)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+
+  if (!slug) {
+    slug = 'campo';
+  }
+  if (/^\d/.test(slug)) {
+    slug = `campo_${slug}`;
+  }
+
+  if (!existingSet.has(slug)) {
+    return slug;
+  }
+  for (let i = 2; i < 200; i++) {
+    const candidate = `${slug}_${i}`;
+    if (!existingSet.has(candidate)) {
+      return candidate;
+    }
+  }
+  return `${slug}_${Date.now().toString().slice(-4)}`;
+}
+
+export interface SmartFieldDefaults {
+  length: number;
+  physicalType: string;
+  precision?: number;
+  scale?: number;
+  alignment: 'Izquierda' | 'Derecha';
+  paddingChar: ' ' | '0' | 'Ninguno';
+  formatMask: string;
+  avroLogicalType: string;
+}
+
+/**
+ * Returns coherent physical & formatting defaults for a logical data type and target file family.
+ */
+export function getSmartFieldDefaults(
+  dataType: StructureField['dataType'],
+  family: TechnicalFamily
+): SmartFieldDefaults {
+  const isTxt = family === 'TXT';
+  switch (dataType) {
+    case 'Fecha':
+      return {
+        length: 10,
+        physicalType: 'DATE',
+        alignment: 'Izquierda',
+        paddingChar: isTxt ? ' ' : 'Ninguno',
+        formatMask: 'dd-MM-yyyy',
+        avroLogicalType: 'int (date)',
+      };
+    case 'Entero':
+      return {
+        length: 12,
+        physicalType: 'BIGINT',
+        alignment: 'Derecha',
+        paddingChar: isTxt ? '0' : 'Ninguno',
+        formatMask: '',
+        avroLogicalType: 'long',
+      };
+    case 'Decimal':
+      return {
+        length: 18,
+        precision: 18,
+        scale: 2,
+        physicalType: 'DECIMAL(18,2)',
+        alignment: 'Derecha',
+        paddingChar: isTxt ? '0' : 'Ninguno',
+        formatMask: '0.00',
+        avroLogicalType: 'bytes (decimal 18,2)',
+      };
+    case 'Booleano':
+      return {
+        length: 5,
+        physicalType: 'BOOLEAN',
+        alignment: 'Izquierda',
+        paddingChar: isTxt ? ' ' : 'Ninguno',
+        formatMask: '',
+        avroLogicalType: 'boolean',
+      };
+    case 'Catálogo':
+      return {
+        length: 15,
+        physicalType: 'VARCHAR(15)',
+        alignment: 'Izquierda',
+        paddingChar: isTxt ? ' ' : 'Ninguno',
+        formatMask: '',
+        avroLogicalType: 'string',
+      };
+    case 'Registro / Grupo':
+      return {
+        length: 0,
+        physicalType: 'RECORD',
+        alignment: 'Izquierda',
+        paddingChar: 'Ninguno',
+        formatMask: '',
+        avroLogicalType: 'record',
+      };
+    case 'Texto':
+    default:
+      return {
+        length: 30,
+        physicalType: 'VARCHAR(30)',
+        alignment: 'Izquierda',
+        paddingChar: isTxt ? ' ' : 'Ninguno',
+        formatMask: '',
+        avroLogicalType: 'string',
+      };
+  }
+}
+
+/**
+ * Builds a complete StructureField from minimal simplified inputs while auto-filling technical properties.
+ */
+export function buildSmartStructureField(params: {
+  label: string;
+  dataType: StructureField['dataType'];
+  family: TechnicalFamily;
+  existingFields: StructureField[];
+  sourceContractId: string;
+  required?: boolean;
+  customLength?: number;
+  lengthUnit?: 'Caracteres' | 'Bytes';
+  fieldId?: string;
+}): StructureField {
+  const {
+    label,
+    dataType,
+    family,
+    existingFields,
+    sourceContractId,
+    required = true,
+    customLength,
+    lengthUnit = 'Caracteres',
+    fieldId,
+  } = params;
+
+  const cleanLabel = label.trim() || `Nuevo Campo ${existingFields.length + 1}`;
+  const technicalName = buildAutoTechnicalName(
+    cleanLabel,
+    existingFields.map((f) => f.technicalName)
+  );
+  const defaults = getSmartFieldDefaults(dataType, family);
+  const length =
+    typeof customLength === 'number' && customLength > 0 ? customLength : defaults.length;
+  const physicalType =
+    dataType === 'Texto' || dataType === 'Catálogo'
+      ? `VARCHAR(${length})`
+      : dataType === 'Decimal'
+      ? `DECIMAL(${length},${defaults.scale ?? 2})`
+      : defaults.physicalType;
+
+  const lastField = existingFields[existingFields.length - 1];
+  const startPosition = lastField
+    ? (lastField.startPosition || 1) + Math.max(1, lastField.length)
+    : 1;
+
+  return {
+    id: fieldId || `FLD-${Date.now().toString(36).toUpperCase()}-${existingFields.length + 1}`,
+    technicalName,
+    label: cleanLabel,
+    description: `Campo ${cleanLabel} configurado desde el asistente`,
+    recordSection: 'Detalle',
+    order: existingFields.length + 1,
+    dataType,
+    physicalType,
+    length,
+    lengthUnit,
+    precision: dataType === 'Decimal' ? length : undefined,
+    scale: dataType === 'Decimal' ? defaults.scale ?? 2 : undefined,
+    required,
+    nullable: !required,
+    startPosition,
+    formatMask: defaults.formatMask,
+    defaultValue: '',
+    paddingChar: defaults.paddingChar,
+    alignment: defaults.alignment,
+    overflowRule: 'Bloquear con error',
+    protectionClass: 'Parametrizable',
+    evidenceState: 'Sustento explícito',
+    evidenceSourceRef: 'Configurado en diseñador',
+    xmlNodeKind: 'Elemento',
+    avroLogicalType: defaults.avroLogicalType,
+    mapping: {
+      transformationKind: 'Directo',
+      sourceContractId,
+      sourceField: '',
+      expression: '',
+      isParameterizedPoint: false,
+      emptyTreatment: required ? 'Error bloqueante' : 'Nulo explícito',
+      mappingStatus: 'Sin asignar',
+    },
+  };
+}
+
+/**
+ * Normalizes field order, sequential fixed-width positions, and family-appropriate padding/alignment.
+ */
+export function recalculateStructureFieldsForFamily(
+  fields: StructureField[],
+  family: TechnicalFamily
+): StructureField[] {
+  const isTxt = family === 'TXT';
+  let cursor = 1;
+  return fields.map((f, idx) => {
+    const len = Math.max(1, f.length || 1);
+    const start = cursor;
+    cursor = start + len;
+    const defaults = getSmartFieldDefaults(f.dataType, family);
+    return {
+      ...f,
+      order: idx + 1,
+      startPosition: start,
+      paddingChar: isTxt
+        ? f.paddingChar === 'Ninguno'
+          ? defaults.paddingChar
+          : f.paddingChar
+        : 'Ninguno',
+    };
+  });
+}
+
+/**
+ * Builds a complete, valid ConfiguredOutput in Borrador using smart defaults for quick/simplified creation,
+ * while preserving full editability of every technical parameter in Advanced View.
+ */
+export function buildQuickOutputDefaults(params: {
+  name: string;
+  outputType: OutputType;
+  existingCodes?: string[];
+  regulator?: string;
+  jurisdiction?: ConfiguredOutput['jurisdiction'];
+  description?: string;
+  starterMode?: 'single' | 'five';
+  customFields?: StructureField[];
+  responsibleUser: string;
+  defaultContractId?: string;
+  defaultChannelId?: string;
+  nowDate?: string;
+  nowDateTime?: string;
+  overrideCode?: string;
+  overrideVersion?: string;
+  overrideValidFrom?: string;
+}): ConfiguredOutput {
+  const {
+    name,
+    outputType,
+    existingCodes = [],
+    regulator,
+    jurisdiction = 'Colombia',
+    description,
+    starterMode = 'single',
+    customFields,
+    responsibleUser,
+    defaultContractId = 'DC-CARTERA-01',
+    defaultChannelId = 'CHAN-MANUAL-01',
+    nowDate = '2026-11-09',
+    nowDateTime = '2026-11-09 09:00',
+    overrideCode,
+    overrideVersion,
+    overrideValidFrom,
+  } = params;
+
+  const cleanName = name.trim() || 'Nueva Salida Regulatoria';
+  const cleanCode =
+    overrideCode && overrideCode.trim().length > 0
+      ? overrideCode.trim().toUpperCase()
+      : buildAutoOutputCode(cleanName, existingCodes);
+  const cleanRegulator =
+    regulator && regulator.trim().length > 0
+      ? regulator.trim()
+      : jurisdiction === 'Perú'
+      ? 'SBS / Ente Supervisor'
+      : 'SFC / Ente Supervisor';
+  const cleanVersion = overrideVersion?.trim() || '1.0';
+  const cleanValidFrom = overrideValidFrom?.trim() || nowDate;
+  const cleanDescription =
+    description && description.trim().length > 0
+      ? description.trim()
+      : `Salida ${outputType.family} configurada para ${cleanName} (${cleanRegulator}).`;
+
+  const ext = outputType.extension.replace(/^\./, '').toLowerCase() || outputType.family.toLowerCase();
+  const isAvro = outputType.family === 'AVRO';
+  const isTxt = outputType.family === 'TXT';
+  const isCsv = outputType.family === 'CSV';
+
+  const starterFields: StructureField[] =
+    starterMode === 'single'
+      ? [
+          {
+            id: `FLD-${Date.now()}-1`,
+            technicalName: 'id_obligacion',
+            label: 'ID Obligación',
+            description: 'Identificador único de la operación reportada',
+            recordSection: 'Detalle',
+            order: 1,
+            dataType: 'Texto',
+            physicalType: 'VARCHAR(12)',
+            length: 12,
+            lengthUnit: 'Caracteres',
+            required: true,
+            nullable: false,
+            startPosition: 1,
+            formatMask: '',
+            defaultValue: '',
+            paddingChar: isTxt ? '0' : 'Ninguno',
+            alignment: isTxt ? 'Derecha' : 'Izquierda',
+            overflowRule: 'Bloquear con error',
+            protectionClass: 'Parametrizable',
+            evidenceState: 'Sustento explícito',
+            evidenceSourceRef: 'Definido por usuario',
+            xmlNodeKind: 'Elemento',
+            avroLogicalType: 'string',
+            mapping: {
+              transformationKind: 'Directo',
+              sourceContractId: defaultContractId,
+              sourceField: 'id_obligacion',
+              expression: 'id_obligacion',
+              isParameterizedPoint: false,
+              emptyTreatment: 'Error bloqueante',
+              mappingStatus: 'Confirmado por usuario',
+            },
+          },
+        ]
+      : [
+          {
+            id: `FLD-${Date.now()}-1`,
+            technicalName: 'fecha_corte',
+            label: 'Fecha de Corte',
+            description: 'Fecha de corte del periodo reportado',
+            recordSection: 'Detalle',
+            order: 1,
+            dataType: 'Fecha',
+            physicalType: 'DATE',
+            length: 10,
+            lengthUnit: 'Caracteres',
+            required: true,
+            nullable: false,
+            startPosition: 1,
+            formatMask: 'dd-MM-yyyy',
+            defaultValue: '',
+            paddingChar: isTxt ? ' ' : 'Ninguno',
+            alignment: 'Izquierda',
+            overflowRule: 'Bloquear con error',
+            protectionClass: 'Parametrizable',
+            evidenceState: 'Sustento explícito',
+            evidenceSourceRef: 'Instructivo Regulatorio',
+            xmlNodeKind: 'Elemento',
+            avroLogicalType: 'int (date)',
+            mapping: {
+              transformationKind: 'Máscara fecha/número',
+              sourceContractId: defaultContractId,
+              sourceField: 'fecha_corte',
+              expression: 'dd-MM-yyyy',
+              isParameterizedPoint: false,
+              emptyTreatment: 'Error bloqueante',
+              mappingStatus: 'Confirmado por usuario',
+            },
+          },
+          {
+            id: `FLD-${Date.now()}-2`,
+            technicalName: 'id_obligacion',
+            label: 'ID Obligación',
+            description: 'Identificador único del contrato u obligación',
+            recordSection: 'Detalle',
+            order: 2,
+            dataType: 'Texto',
+            physicalType: 'VARCHAR(6)',
+            length: 6,
+            lengthUnit: 'Caracteres',
+            required: true,
+            nullable: false,
+            startPosition: 11,
+            formatMask: '',
+            defaultValue: '',
+            paddingChar: isTxt ? '0' : 'Ninguno',
+            alignment: 'Derecha',
+            overflowRule: 'Bloquear con error',
+            protectionClass: 'Parametrizable',
+            evidenceState: 'Sustento explícito',
+            evidenceSourceRef: 'Instructivo Regulatorio',
+            xmlNodeKind: 'Atributo',
+            avroLogicalType: 'string',
+            mapping: {
+              transformationKind: 'Directo',
+              sourceContractId: defaultContractId,
+              sourceField: 'id_obligacion',
+              expression: 'id_obligacion',
+              isParameterizedPoint: false,
+              emptyTreatment: 'Error bloqueante',
+              mappingStatus: 'Confirmado por usuario',
+            },
+          },
+          {
+            id: `FLD-${Date.now()}-3`,
+            technicalName: 'nombre_cliente',
+            label: 'Nombre o Razón Social',
+            description: 'Nombre completo del titular de la obligación',
+            recordSection: 'Detalle',
+            order: 3,
+            dataType: 'Texto',
+            physicalType: 'VARCHAR(50)',
+            length: 50,
+            lengthUnit: 'Caracteres',
+            required: true,
+            nullable: false,
+            startPosition: 17,
+            formatMask: '',
+            defaultValue: '',
+            paddingChar: isTxt ? ' ' : 'Ninguno',
+            alignment: 'Izquierda',
+            overflowRule: 'Bloquear con error',
+            protectionClass: 'Parametrizable',
+            evidenceState: 'Sustento explícito',
+            evidenceSourceRef: 'Instructivo Regulatorio',
+            xmlNodeKind: 'Elemento',
+            avroLogicalType: 'string',
+            mapping: {
+              transformationKind: 'Concatenación tipada',
+              sourceContractId: defaultContractId,
+              sourceField: 'nombre',
+              expression: "nombre + ' ' + apellido_1",
+              isParameterizedPoint: false,
+              emptyTreatment: 'Error bloqueante',
+              mappingStatus: 'Confirmado por usuario',
+            },
+          },
+          {
+            id: `FLD-${Date.now()}-4`,
+            technicalName: 'saldo',
+            label: 'Saldo al Corte',
+            description: 'Saldo capital en moneda local con 2 decimales',
+            recordSection: 'Detalle',
+            order: 4,
+            dataType: 'Decimal',
+            physicalType: 'DECIMAL(16,2)',
+            length: 16,
+            lengthUnit: 'Caracteres',
+            precision: 16,
+            scale: 2,
+            required: true,
+            nullable: false,
+            startPosition: 67,
+            formatMask: '0.00',
+            defaultValue: '0.00',
+            paddingChar: isTxt ? '0' : 'Ninguno',
+            alignment: 'Derecha',
+            overflowRule: 'Bloquear con error',
+            protectionClass: 'Parametrizable',
+            evidenceState: 'Sustento explícito',
+            evidenceSourceRef: 'Instructivo Regulatorio',
+            xmlNodeKind: 'Elemento',
+            avroLogicalType: 'bytes (decimal 16,2)',
+            mapping: {
+              transformationKind: 'Directo',
+              sourceContractId: defaultContractId,
+              sourceField: 'saldo',
+              expression: 'saldo',
+              isParameterizedPoint: false,
+              emptyTreatment: 'Error bloqueante',
+              mappingStatus: 'Confirmado por usuario',
+            },
+          },
+          {
+            id: `FLD-${Date.now()}-5`,
+            technicalName: 'estado_operacion',
+            label: 'Estado de la Operación',
+            description: 'Estado crediticio de la operación al corte',
+            recordSection: 'Detalle',
+            order: 5,
+            dataType: 'Catálogo',
+            physicalType: 'VARCHAR(12)',
+            length: 12,
+            lengthUnit: 'Caracteres',
+            required: true,
+            nullable: false,
+            startPosition: 83,
+            formatMask: '',
+            defaultValue: 'VIGENTE',
+            paddingChar: isTxt ? ' ' : 'Ninguno',
+            alignment: 'Izquierda',
+            overflowRule: 'Bloquear con error',
+            protectionClass: 'Parametrizable',
+            evidenceState: 'Sustento explícito',
+            evidenceSourceRef: 'Instructivo Regulatorio',
+            xmlNodeKind: 'Elemento',
+            avroLogicalType: 'string',
+            mapping: {
+              transformationKind: 'Directo',
+              sourceContractId: defaultContractId,
+              sourceField: 'estado_homologado',
+              expression: 'estado_homologado',
+              isParameterizedPoint: false,
+              emptyTreatment: 'Valor predeterminado',
+              mappingStatus: 'Confirmado por usuario',
+            },
+          },
+        ];
+
+  const fields =
+    customFields && customFields.length > 0
+      ? recalculateStructureFieldsForFamily(customFields, outputType.family)
+      : starterFields;
+
+  const basePattern = `{entidad}_${cleanCode}_{periodo}_v{version}`;
+
+  return {
+    id: `OUT-${Date.now().toString(36).toUpperCase()}`,
+    code: cleanCode,
+    name: cleanName,
+    purpose: 'Entrega regulatoria configurada desde el asistente',
+    jurisdiction,
+    regulator: cleanRegulator,
+    outputTypeId: outputType.id,
+    description: cleanDescription,
+    responsibleUser,
+    validFrom: cleanValidFrom,
+    validTo: 'Abierta',
+    version: cleanVersion,
+    status: 'Borrador',
+    derivationType: 'Original',
+    updatedAt: nowDate,
+    fingerprint: `SHA256:${cleanCode}-V${cleanVersion.replace(/\./g, '')}`,
+    composition: {
+      fileNamePattern: basePattern,
+      extension: ext,
+      encoding: isAvro ? 'Binario' : 'UTF-8',
+      delimiter: isCsv ? ';' : isTxt ? 'Ancho fijo' : 'N/A',
+      decimalSeparator: isCsv ? ',' : '.',
+      includeHeader: isCsv || isTxt,
+      includeControlTotals: false,
+      includeFooter: isTxt,
+      packaging: 'Sin empaquetar',
+      maxPackageBytes: 52428800,
+      emptyDatasetPolicy: 'Producir vacío válido',
+      packageMembers: [
+        {
+          id: `PKG-${Date.now()}`,
+          role: 'Principal',
+          cardinality: '1..1 (Obligatorio)',
+          outputDefinitionId: cleanCode,
+          outputVersion: cleanVersion,
+          fileNamePattern: `${basePattern}.${ext}`,
+          includeInRegulatoryDelivery: true,
+          allowRoleMappingOverride: true,
+        },
+      ],
+    },
+    dataContractId: defaultContractId,
+    fields,
+    validationRules: [
+      {
+        id: `VR-${Date.now()}-1`,
+        code: 'VAL-EST-01',
+        name: 'Verificación de longitud y obligatoriedad de campos',
+        layer: 'Diseño y estructura',
+        targetFieldOrRole: 'Todos los campos',
+        conditionExpression: 'ALL_REQUIRED_PRESENT() AND NO_FIELD_OVERFLOW()',
+        severity: 'Bloqueante',
+        isNormativeProtected: false,
+        owner: 'Política de salida y entrega',
+        diagnosticMessage:
+          'Existen campos obligatorios vacíos o valores que exceden la longitud configurada.',
+        enabled: true,
+      },
+    ],
+    defaultDeliveryChannelId: defaultChannelId,
+    signatureServiceRef: 'KMS-INST-01',
+    encryptionPolicy: 'Sin cifrado adicional (TLS canal)',
+    sourceDocIds: ['DOC-SFC-01'],
+    versionHistory: [
+      {
+        version: cleanVersion,
+        status: 'Borrador',
+        createdAt: nowDateTime,
+        createdBy: responsibleUser,
+        justification: 'Creación inicial desde Salidas configuradas.',
+        changesSummary: ['Creación inicial de estructura'],
+        fingerprint: `SHA256:${cleanCode}-V${cleanVersion.replace(/\./g, '')}`,
+        derivationKind: 'Creación inicial',
+      },
+    ],
+  };
+}
+
+export const NO_REGULATOR_LABEL = 'Sin entidad reguladora (Salida personalizada)';
+
+export interface WizardFormatSelection {
+  formatId: string;
+  transmissionTypeId: string;
+  modality: 'Inicial' | 'Corrección' | 'Reemplazo';
+  proposedStatus: 'Activa' | 'Instalada sin activar' | 'Borrador';
+}
+
+/**
+ * Filters receiving organisms from the shared catalog according to the selected jurisdiction/country.
+ */
+export function getOrganismsForJurisdiction(
+  organisms: ReceivingOrganismDefinition[],
+  jurisdiction: ConfiguredOutput['jurisdiction']
+): ReceivingOrganismDefinition[] {
+  if (jurisdiction === 'Multirregulador') {
+    return [...organisms];
+  }
+  return organisms.filter((org) => org.country === jurisdiction);
+}
+
+/**
+ * Determines whether a RegulatoryFormat matches a selected regulator/organism name or short code.
+ */
+export function formatMatchesOrganism(
+  format: RegulatoryFormat,
+  selectedRegulator: string,
+  organisms: ReceivingOrganismDefinition[]
+): boolean {
+  const normalized = (selectedRegulator || '').trim();
+  if (
+    !normalized ||
+    normalized === 'ALL' ||
+    normalized === NO_REGULATOR_LABEL ||
+    normalized.toLowerCase().includes('sin entidad reguladora')
+  ) {
+    return true;
+  }
+
+  const targetLower = normalized.toLowerCase();
+  const fmtRegLower = (format.regulator || '').trim().toLowerCase();
+  if (fmtRegLower === targetLower) return true;
+
+  const matchedOrg = organisms.find(
+    (org) =>
+      org.name.toLowerCase() === targetLower ||
+      org.shortName.toLowerCase() === targetLower ||
+      org.code.toLowerCase() === targetLower
+  );
+
+  if (matchedOrg) {
+    return (
+      fmtRegLower === matchedOrg.name.toLowerCase() ||
+      fmtRegLower === matchedOrg.shortName.toLowerCase() ||
+      fmtRegLower === matchedOrg.code.toLowerCase()
+    );
+  }
+
+  // Also resolve against full Americas & Europe jurisdiction directory (shortName <-> full name)
+  const fmtCountry = format.country || format.jurisdiction;
+  for (const jurEntry of AMERICAS_AND_EUROPE_COUNTRIES) {
+    if (fmtCountry && jurEntry.country !== fmtCountry) continue;
+    const regMatch = jurEntry.regulators.find(
+      (r) =>
+        r.name.toLowerCase() === targetLower ||
+        r.shortName.toLowerCase() === targetLower
+    );
+    if (regMatch) {
+      const rName = regMatch.name.toLowerCase();
+      const rShort = regMatch.shortName.toLowerCase();
+      if (
+        fmtRegLower === rName ||
+        fmtRegLower === rShort ||
+        fmtRegLower.includes(rShort) ||
+        rShort.includes(fmtRegLower)
+      ) {
+        return true;
+      }
+    }
+  }
+
+  return fmtRegLower.includes(targetLower) || targetLower.includes(fmtRegLower);
+}
+
+/**
+ * Returns transmission types permitted by a format, prioritizing those compatible with the output technical family.
+ */
+export function getCompatibleTransmissionsForFormat(
+  format: RegulatoryFormat,
+  transmissionTypes: TransmissionType[],
+  family?: TechnicalFamily
+): TransmissionType[] {
+  const enabled =
+    format.enabledTransmissionTypes && format.enabledTransmissionTypes.length > 0
+      ? transmissionTypes.filter((t) => format.enabledTransmissionTypes.includes(t.id))
+      : [...transmissionTypes];
+
+  const candidates = enabled.length > 0 ? enabled : [...transmissionTypes];
+  if (!family) return candidates;
+
+  return [...candidates].sort((a, b) => {
+    const aCompat = a.compatibleFamilies.includes(family) ? 0 : 1;
+    const bCompat = b.compatibleFamilies.includes(family) ? 0 : 1;
+    return aCompat - bCompat;
+  });
+}
+
+/**
+ * Builds and validates FormatOutputAssociation records for zero, one, or multiple formats chosen in the simplified wizard.
+ */
+export function buildWizardAssociationRecords(params: {
+  selections: WizardFormatSelection[];
+  configuredOutput: ConfiguredOutput;
+  outputType?: OutputType;
+  formats: RegulatoryFormat[];
+  transmissionTypes: TransmissionType[];
+  existingAssociations: FormatOutputAssociation[];
+  entityScope: string;
+  entityTypeScope?: string;
+  environment: 'QA' | 'Producción';
+  deliveryChannelId: string;
+  activeUserRole: string;
+  nowDate?: string;
+}): {
+  records: FormatOutputAssociation[];
+  skipped: { formatId: string; formatLabel: string; reason: string }[];
+} {
+  const {
+    selections,
+    configuredOutput,
+    outputType,
+    formats,
+    transmissionTypes,
+    existingAssociations,
+    entityScope,
+    entityTypeScope,
+    environment,
+    deliveryChannelId,
+    activeUserRole,
+    nowDate = '2026-11-10',
+  } = params;
+
+  const records: FormatOutputAssociation[] = [];
+  const skipped: { formatId: string; formatLabel: string; reason: string }[] = [];
+  const accumulatedAssociations = [...existingAssociations];
+  const baseTs = Date.now();
+
+  selections.forEach((sel, idx) => {
+    const format = formats.find((f) => f.id === sel.formatId);
+    if (!format) {
+      skipped.push({
+        formatId: sel.formatId,
+        formatLabel: sel.formatId,
+        reason: 'El formato seleccionado no existe en el catálogo actual.',
+      });
+      return;
+    }
+
+    const trans = transmissionTypes.find((t) => t.id === sel.transmissionTypeId);
+    const contextCountry: string =
+      configuredOutput.jurisdiction === 'Multirregulador'
+        ? format.country || format.jurisdiction
+        : configuredOutput.jurisdiction;
+
+    const initialValidation = validateAssociationContext({
+      format,
+      transmissionType: trans,
+      configuredOutput,
+      outputType,
+      country: contextCountry,
+      existingAssociations: accumulatedAssociations,
+      proposedStatus: sel.proposedStatus,
+      proposedModality: sel.modality,
+      proposedEnvironment: environment,
+      proposedValidFrom: format.specificationValidity?.validFrom || nowDate,
+    });
+
+    let effectiveStatus = sel.proposedStatus;
+    let effectiveValidation = initialValidation;
+
+    if (sel.proposedStatus === 'Activa' && !initialValidation.canActivate) {
+      effectiveStatus =
+        format.classificationStatus === 'Pendiente de clasificación' ||
+        format.lifecycleStatus === 'Inactivo' ||
+        format.lifecycleStatus === 'Borrador' ||
+        format.normativeAvailability === 'Por entrar en vigencia'
+          ? 'Instalada sin activar'
+          : 'Borrador';
+      effectiveValidation = validateAssociationContext({
+        format,
+        transmissionType: trans,
+        configuredOutput,
+        outputType,
+        country: contextCountry,
+        existingAssociations: accumulatedAssociations,
+        proposedStatus: effectiveStatus,
+        proposedModality: sel.modality,
+        proposedEnvironment: environment,
+        proposedValidFrom: format.specificationValidity?.validFrom || nowDate,
+      });
+    }
+
+    if (!effectiveValidation.isValid) {
+      skipped.push({
+        formatId: format.id,
+        formatLabel: `${format.code || format.internalCode || format.id} — ${format.name}`,
+        reason: effectiveValidation.blockers[0] || 'Contexto de asociación inválido.',
+      });
+      return;
+    }
+
+    const cleanCode = (format.code || format.internalCode || 'FMT').replace(/[^A-Za-z0-9]/g, '');
+    const seqNumber = accumulatedAssociations.length + 1;
+    const newCode = `ASO-${cleanCode}-${seqNumber}`;
+
+    const record: FormatOutputAssociation = {
+      id: `ASO-${baseTs}-${idx + 1}`,
+      code: newCode,
+      formatId: format.id,
+      transmissionTypeId: trans?.id || sel.transmissionTypeId,
+      modality: sel.modality,
+      configuredOutputId: configuredOutput.id,
+      configuredOutputVersion: configuredOutput.version,
+      deliveryChannelId,
+      daqueProfileId: format.daqueProfileId || 'DAQUE-PROF-01',
+      entityScope,
+      entityTypeScope,
+      environment,
+      validFrom: format.specificationValidity?.validFrom || nowDate,
+      validTo: 'Abierta',
+      status: effectiveStatus,
+      parameterOverrides: {
+        fileNamePrefix: `${cleanCode}_`,
+      },
+      updatedAt: nowDate,
+      updatedBy: activeUserRole,
+    };
+
+    records.push(record);
+    accumulatedAssociations.push(record);
+  });
+
+  return { records, skipped };
+}
+
+
 
 

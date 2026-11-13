@@ -34,6 +34,7 @@ import {
   proposeFieldMappings,
 } from '../domain/engine';
 import { HelpTooltip } from './HelpTooltip';
+import { TotalReportLogo } from './TotalReportLogo';
 
 export type TotaliaActionType =
   | 'ayudame_a_crear'
@@ -169,8 +170,8 @@ export const TotaliaBuilderAssistantModal: React.FC<TotaliaBuilderAssistantModal
         {/* Modal Header */}
         <div className="bg-[#0F1F38] text-white px-5 py-3.5 flex items-center justify-between border-b border-slate-800 shrink-0">
           <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded-lg bg-[#1E4E8C] border border-blue-400/40 flex items-center justify-center text-white">
-              <Sparkles className="w-4 h-4 text-sky-300" />
+            <div className="w-9 h-9 rounded-lg bg-white/10 border border-white/15 flex items-center justify-center p-1 shrink-0">
+              <TotalReportLogo className="w-full h-full object-contain" alt="Logo TOTALiA® · TÓTAL REPORT®" />
             </div>
             <div>
               <div className="flex items-center gap-2">

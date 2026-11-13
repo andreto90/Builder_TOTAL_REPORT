@@ -28,6 +28,7 @@ import {
   Sliders,
   Sparkles,
   Trash2,
+  Upload,
   Wand2,
 } from 'lucide-react';
 import { useConfigurator } from '../context/ConfiguratorContext';
@@ -40,6 +41,11 @@ import {
   proposeFieldMappings,
   resolveDynamicFileName,
 } from '../domain/engine';
+import { AMERICAS_AND_EUROPE_COUNTRIES } from '../domain/jurisdictionsCatalog';
+import {
+  AppliedAnnexInterpretationResult,
+  NormativeAnnexInterpretation,
+} from '../domain/annexInterpreterTypes';
 import {
   ConfiguredOutput,
   EmptyDatasetPolicy,
@@ -50,7 +56,9 @@ import {
   ValidationLayer,
 } from '../domain/types';
 import { HelpTooltip } from './HelpTooltip';
+import { NormativeAnnexImportPanel } from './NormativeAnnexImportPanel';
 import { Step3DataOriginView } from './Step3DataOriginView';
+import { TotalReportLogo } from './TotalReportLogo';
 import {
   TotaliaBuilderAssistantModal,
   TotaliaActionType,
@@ -121,12 +129,64 @@ export const VisualOutputBuilderView: React.FC = () => {
 
   // TOTALiA Contextual Assistant Modal State
   const [showTotaliaModal, setShowTotaliaModal] = useState<boolean>(false);
+  const [showAnnexImportModal, setShowAnnexImportModal] = useState<boolean>(false);
   const [totaliaModalAction, setTotaliaModalAction] =
     useState<TotaliaActionType>('siguiente_paso');
 
   const openTotaliaWithAction = (action: TotaliaActionType) => {
     setTotaliaModalAction(action);
     setShowTotaliaModal(true);
+  };
+
+  const handleApplyAnnexToDraft = (
+    interp: NormativeAnnexInterpretation,
+    applied: AppliedAnnexInterpretationResult
+  ) => {
+    if (isImmutable) {
+      notify(
+        'warning',
+        'Esta versión es inmutable. Cree una nueva revisión antes de importar un anexo normativo.'
+      );
+      return;
+    }
+    updateDraft((prev) => ({
+      ...prev,
+      name: applied.draft.name || prev.name,
+      description: applied.draft.description || prev.description,
+      jurisdiction: applied.matchedCountry || prev.jurisdiction,
+      regulator:
+        applied.matchedRegulatorName &&
+        applied.matchedRegulatorName !== 'Sin entidad reguladora específica (Formato personalizado)'
+          ? applied.matchedRegulatorName
+          : prev.regulator,
+      outputTypeId: applied.matchedOutputTypeId || prev.outputTypeId,
+      fields: applied.draft.fields,
+      validationRules:
+        applied.draft.validationRules.length > 0
+          ? applied.draft.validationRules
+          : prev.validationRules,
+      composition: {
+        ...prev.composition,
+        ...applied.draft.composition,
+      },
+      csvParamsOverride: applied.draft.csvParamsOverride ?? prev.csvParamsOverride,
+      txtParamsOverride: applied.draft.txtParamsOverride ?? prev.txtParamsOverride,
+      xmlParamsOverride: applied.draft.xmlParamsOverride ?? prev.xmlParamsOverride,
+      pdfParamsOverride: applied.draft.pdfParamsOverride ?? prev.pdfParamsOverride,
+    }));
+    if (applied.draft.fields.length > 0) {
+      setSelectedFieldId(applied.draft.fields[0].id);
+    }
+    setShowAnnexImportModal(false);
+    setBuilderStep(2);
+    const pendingMsg =
+      interp.uninterpretedItems.length > 0
+        ? ` Atención: ${interp.uninterpretedItems.length} elemento(s) requieren confirmación manual.`
+        : '';
+    notify(
+      interp.uninterpretedItems.length > 0 ? 'warning' : 'success',
+      `TOTALiA® aplicó ${applied.draft.fields.length} campo(s) y ${applied.draft.validationRules.length} validación(es) desde "${interp.sourceFileName}".${pendingMsg}`
+    );
   };
 
   // Step 3: Auto-map overwrite option
@@ -1138,9 +1198,9 @@ export const VisualOutputBuilderView: React.FC = () => {
   return (
     <div className="space-y-4">
       {/* Top Bar: Output Selector, Status, and Save Action */}
-      <div className="bg-white border border-slate-200 rounded-md p-4 flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3">
-        <div className="flex flex-wrap items-center gap-3">
-          <div>
+      <div className="bg-white border border-slate-200 rounded-md p-4 flex flex-col xl:flex-row xl:items-center xl:justify-between gap-3">
+        <div className="flex flex-wrap items-center gap-3 min-w-0 flex-1">
+          <div className="min-w-0 w-full">
             <span className="text-[11px] font-bold uppercase tracking-wider text-[#1E4E8C] flex items-center gap-1">
               <span>C. Diseñador de salidas · Asistente Guiado en 7 Pasos</span>
               <HelpTooltip
@@ -1148,14 +1208,14 @@ export const VisualOutputBuilderView: React.FC = () => {
                 description="Permite configurar una salida regulatoria desde sus datos generales hasta su publicación. Todos los cambios en estado Borrador o En revisión se guardan automáticamente en el navegador y actualizan en tiempo real la vista previa."
               />
             </span>
-            <div className="flex flex-wrap items-center gap-2 mt-1">
+            <div className="flex flex-wrap items-center gap-2 mt-1 min-w-0">
               <select
                 aria-label="Seleccionar salida en el diseñador"
                 value={draft.id}
                 onChange={(e) => {
                   setSelectedOutputId(e.target.value);
                 }}
-                className="border border-slate-300 rounded px-2.5 py-1.5 text-xs font-mono font-bold bg-white text-slate-900"
+                className="w-full sm:w-auto sm:max-w-[420px] truncate border border-slate-300 rounded px-2.5 py-1.5 text-xs font-mono font-bold bg-white text-slate-900"
               >
                 {configuredOutputs.map((o) => {
                   const ot = outputTypes.find((t) => t.id === o.outputTypeId);
@@ -1167,12 +1227,12 @@ export const VisualOutputBuilderView: React.FC = () => {
                 })}
               </select>
 
-              <span className="px-2.5 py-1 rounded text-xs font-mono font-bold bg-[#0F1F38] text-white">
+              <span className="px-2.5 py-1 rounded text-xs font-mono font-bold bg-[#0F1F38] text-white whitespace-nowrap">
                 {selectedOutputType.family}
               </span>
 
               <span
-                className={`px-2.5 py-1 rounded text-xs font-semibold border ${
+                className={`px-2.5 py-1 rounded text-xs font-semibold border whitespace-nowrap ${
                   draft.status === 'Publicada'
                     ? 'bg-emerald-50 text-emerald-900 border-emerald-300'
                     : draft.status === 'Aprobada'
@@ -1188,7 +1248,7 @@ export const VisualOutputBuilderView: React.FC = () => {
           </div>
         </div>
 
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2 shrink-0">
           {isImmutable ? (
             <>
               <HelpTooltip
@@ -1203,21 +1263,21 @@ export const VisualOutputBuilderView: React.FC = () => {
               <button
                 type="button"
                 onClick={() => setShowRevisionModal(true)}
-                className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded text-xs font-bold bg-amber-500 text-slate-950 hover:bg-amber-400 transition-colors cursor-pointer"
+                className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded text-xs font-bold bg-amber-500 text-slate-950 hover:bg-amber-400 transition-colors whitespace-nowrap cursor-pointer"
               >
                 <GitBranch className="w-4 h-4" />
                 Crear nueva revisión para editar
               </button>
             </>
           ) : (
-            <div className="flex items-center gap-2">
-              <span className="text-[11px] text-emerald-800 bg-emerald-50 border border-emerald-200 px-2.5 py-1 rounded font-mono">
+            <div className="flex items-center gap-2 shrink-0">
+              <span className="text-[11px] text-emerald-800 bg-emerald-50 border border-emerald-200 px-2.5 py-1 rounded font-mono whitespace-nowrap">
                 Autoguardado: {lastSavedAt}
               </span>
               <button
                 type="button"
                 onClick={handleManualSave}
-                className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded text-xs font-bold bg-[#1E4E8C] text-white hover:bg-[#163A69] transition-colors cursor-pointer"
+                className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded text-xs font-bold bg-[#1E4E8C] text-white hover:bg-[#163A69] transition-colors whitespace-nowrap cursor-pointer"
               >
                 <Save className="w-3.5 h-3.5" />
                 Guardar cambios
@@ -1300,328 +1360,336 @@ export const VisualOutputBuilderView: React.FC = () => {
 
       {/* Marco de Coherencia Operativa: Destino Regulatorio, Estructura de Salida y Origen de Datos */}
       <div className="bg-white border border-slate-200 rounded-lg p-3.5 shadow-xs mb-4">
-        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2.5 pb-2.5 border-b border-slate-100">
-          <div className="flex items-center gap-2">
-            <div className="w-6 h-6 rounded bg-[#1E4E8C] text-white flex items-center justify-center text-xs font-bold shrink-0">
-              TR
-            </div>
-            <div>
-              <h3 className="text-xs font-bold text-slate-900 uppercase tracking-wider">
-                Marco de Coherencia Operativa
-              </h3>
-              <p className="text-[11px] text-slate-500">
-                Diferenciación de roles técnicos: <strong>Destino Regulatorio</strong>, <strong>Estructura de Salida</strong> y <strong>Origen de Información</strong>.
-              </p>
-            </div>
-          </div>
-          <span className="text-[11px] text-slate-500 italic bg-slate-50 px-2.5 py-1 rounded border border-slate-200">
-            El informe que aporta los datos (Origen) no tiene que coincidir con el formato que los presenta (Destino).
-          </span>
-        </div>
-
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-3 pt-2.5 text-xs">
-          {/* 1. DESTINO REGULATORIO */}
-          <div className="p-2.5 rounded bg-blue-50/70 border border-blue-200">
-            <div className="text-[10px] font-bold uppercase tracking-wider text-blue-900 flex items-center justify-between">
-              <span className="flex items-center gap-1">
-                <Send className="w-3 h-3 text-[#1E4E8C]" />
-                1. Destino Regulatorio (Módulo D)
-              </span>
-              <span className="px-1.5 py-0.2 rounded bg-blue-200 text-blue-900 text-[9px] font-bold">
-                {linkedAssociations.length > 0 ? `${linkedAssociations.length} asociación(es)` : 'Sin asociar'}
-              </span>
-            </div>
-            <div
-              className="mt-1 font-bold text-slate-900 truncate"
-              title={
-                linkedAssociations.length > 0
-                  ? `${activeFormat.code} — ${activeFormat.name}`
-                  : 'Pendiente de vincular en Módulo D'
-              }
-            >
-              {linkedAssociations.length > 0
-                ? `${activeFormat.code} — ${activeFormat.name}`
-                : 'Formato regulatorio pendiente de vincular en Módulo D'}
-            </div>
-            <div className="text-[11px] text-slate-600 mt-0.5">
-              Canal / Transmisión:{' '}
-              <strong className="text-slate-800">
-                {linkedAssociations[0]?.transmissionTypeId
-                  ? `${linkedAssociations[0].transmissionTypeId} (${linkedAssociations[0].environment})`
-                  : 'A definir en asociaciones'}
-              </strong>
-            </div>
-          </div>
-
-          {/* 2. ESTRUCTURA DE SALIDA EN CONFIGURACIÓN */}
-          <div className="p-2.5 rounded bg-amber-50/70 border border-amber-200">
-            <div className="text-[10px] font-bold uppercase tracking-wider text-amber-900 flex items-center justify-between">
-              <span className="flex items-center gap-1">
-                <FileCode2 className="w-3 h-3 text-amber-700" />
-                2. Estructura de Salida (Configurador)
-              </span>
-              <span className="px-1.5 py-0.2 rounded bg-amber-200 text-amber-900 text-[9px] font-bold font-mono">
-                {draft.code} (v{draft.version})
-              </span>
-            </div>
-            <div className="mt-1 font-bold text-slate-900 truncate" title={draft.name}>
-              {draft.name}
-            </div>
-            <div className="text-[11px] text-slate-600 mt-0.5">
-              Tipo archivo:{' '}
-              <strong className="text-slate-800">
-                {selectedOutputType.family} (.{selectedOutputType.extension})
-              </strong>{' '}
-              · {draft.fields.length} campos definidos
-            </div>
-          </div>
-
-          {/* 3. ORIGEN DE INFORMACIÓN */}
-          <div className="p-2.5 rounded bg-emerald-50/70 border border-emerald-200">
-            <div className="text-[10px] font-bold uppercase tracking-wider text-emerald-900 flex items-center justify-between">
-              <span className="flex items-center gap-1">
-                <Database className="w-3 h-3 text-emerald-700" />
-                3. Origen de Información (Paso 3)
-              </span>
-              <span className="px-1.5 py-0.2 rounded bg-emerald-200 text-emerald-900 text-[9px] font-bold">
-                {selectedDataContract.originRoute === 'Fuente proporcionada por el cliente'
-                  ? 'Fuente Cliente'
-                  : 'Formato Sistema'}
-              </span>
-            </div>
-            <div
-              className="mt-1 font-bold text-slate-900 truncate"
-              title={activeCatalogEntry?.reportName || selectedDataContract.name}
-            >
-              {activeCatalogEntry?.reportName || selectedDataContract.name}
-            </div>
-            <div className="text-[11px] text-slate-600 mt-0.5">
-              Lote para {globalPeriod}:{' '}
-              <strong
-                className={
-                  compiledResult.resolvedPrimaryBatch
-                    ? 'text-emerald-700'
-                    : 'text-rose-700'
-                }
-              >
-                {compiledResult.resolvedPrimaryBatch
-                  ? `${compiledResult.rowsProcessed} registros (${compiledResult.resolvedPrimaryBatch.executionCode})`
-                  : 'Sin lote compatible'}
-              </strong>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* GUÍA DE PASO Y ASISTENTE CONTEXTUAL TOTALiA® */}
-      <div className="bg-white border border-slate-200 rounded-lg p-4 shadow-xs space-y-3.5">
-        {/* Fila 1: Estados de avance y capacidades operativas independientes */}
-        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 pb-3 border-b border-slate-200">
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
-              Estado de avance:
-            </span>
-            <span
-              className={`px-2.5 py-1 rounded-md text-xs font-bold border flex items-center gap-1.5 ${advancementState.badgeClass}`}
-            >
-              <span className="w-2 h-2 rounded-full bg-current"></span>
-              {advancementState.label}
-            </span>
-            <span className="text-[11px] text-slate-500 hidden sm:inline">
-              · {advancementState.desc}
-            </span>
-          </div>
-
-          {/* Tres indicadores independientes (no deducidos uno de otro) */}
-          <div className="flex flex-wrap items-center gap-2 text-[11px]">
-            <span
-              title="Guardado de borrador siempre disponible. Se almacena localmente en su navegador."
-              className="px-2 py-0.5 rounded bg-slate-100 text-slate-700 border border-slate-200 font-medium inline-flex items-center gap-1"
-            >
-              <Save className="w-3 h-3 text-slate-500" />
-              Borrador: <strong className="text-slate-900">Permitido (Navegador)</strong>
-            </span>
-
-            <span
-              title={
-                canDownloadPhysicalArtifact
-                  ? 'Archivo físico listo con lote compatible'
-                  : `Generación física en espera de lote compatible para ${globalPeriod} (CES-DAT-000)`
-              }
-              className={`px-2 py-0.5 rounded border font-medium inline-flex items-center gap-1 ${
-                canDownloadPhysicalArtifact
-                  ? 'bg-emerald-50 text-emerald-900 border-emerald-300'
-                  : 'bg-amber-50 text-amber-950 border-amber-300'
-              }`}
-            >
-              <FileCode2 className="w-3 h-3" />
-              Generación:{' '}
-              <strong>
-                {canDownloadPhysicalArtifact ? 'Habilitada' : 'Espera lote (CES-DAT-000)'}
-              </strong>
-            </span>
-
-            <span
-              title={
-                isImmutable
-                  ? 'Versión protegida (Inmutable). Cree una nueva revisión para publicar cambios.'
-                  : structuralBlockingCount === 0
-                  ? 'Estructura válida para publicar'
-                  : `Bloqueado por ${structuralBlockingCount} error(es) de estructura`
-              }
-              className={`px-2 py-0.5 rounded border font-medium inline-flex items-center gap-1 ${
-                isImmutable
-                  ? 'bg-slate-100 text-slate-700 border-slate-300'
-                  : structuralBlockingCount === 0
-                  ? 'bg-blue-50 text-blue-900 border-blue-300'
-                  : 'bg-rose-50 text-rose-950 border-rose-300'
-              }`}
-            >
-              <Send className="w-3 h-3" />
-              Publicación:{' '}
-              <strong>
-                {isImmutable
-                  ? 'Inmutable'
-                  : structuralBlockingCount === 0
-                  ? 'Habilitada'
-                  : 'Bloqueada'}
-              </strong>
-            </span>
-          </div>
-        </div>
-
-        {/* Fila 2: Orientación breve vinculada al paso activo */}
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-3 bg-slate-50/80 p-3 rounded-lg border border-slate-200/80 text-xs">
-          <div>
-            <div className="font-bold text-slate-700 uppercase text-[10px] tracking-wider">
-              Qué está configurando
-            </div>
-            <div className="text-slate-900 mt-0.5 leading-snug">
-              {currentStepGuidance.whatConfiguring}
-            </div>
-          </div>
-          <div>
-            <div className="font-bold text-slate-700 uppercase text-[10px] tracking-wider">
-              Qué información necesita
-            </div>
-            <div className="text-slate-900 mt-0.5 leading-snug">
-              {currentStepGuidance.whatNeeded}
-            </div>
-          </div>
-          <div>
-            <div className="font-bold text-slate-700 uppercase text-[10px] tracking-wider">
-              Qué falta por completar
-            </div>
-            <div
-              className={`mt-0.5 leading-snug font-medium ${
-                currentStepGuidance.whatMissing.includes('Falta') ||
-                currentStepGuidance.whatMissing.includes('Existen') ||
-                currentStepGuidance.whatMissing.includes('Complete')
-                  ? 'text-amber-900'
-                  : 'text-slate-700'
-              }`}
-            >
-              {currentStepGuidance.whatMissing}
-            </div>
-          </div>
-          <div className="flex flex-col justify-between">
-            <div>
-              <div className="font-bold text-slate-700 uppercase text-[10px] tracking-wider">
-                Siguiente acción
+            <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2.5 pb-2.5 border-b border-slate-100">
+              <div className="flex items-center gap-2">
+                <div className="w-6 h-6 rounded bg-[#1E4E8C] text-white flex items-center justify-center text-xs font-bold shrink-0">
+                  TR
+                </div>
+                <div>
+                  <h3 className="text-xs font-bold text-slate-900 uppercase tracking-wider">
+                    Marco de Coherencia Operativa
+                  </h3>
+                  <p className="text-[11px] text-slate-500">
+                    Diferenciación de roles técnicos: <strong>Destino Regulatorio</strong>, <strong>Estructura de Salida</strong> y <strong>Origen de Información</strong>.
+                  </p>
+                </div>
               </div>
-              <div className="text-[#1E4E8C] font-bold mt-0.5 leading-snug">
-                {currentStepGuidance.nextAction}
+              <span className="text-[11px] text-slate-500 italic bg-slate-50 px-2.5 py-1 rounded border border-slate-200">
+                El informe que aporta los datos (Origen) no tiene que coincidir con el formato que los presenta (Destino).
+              </span>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3 pt-2.5 text-xs">
+              {/* 1. DESTINO REGULATORIO */}
+              <div className="p-2.5 rounded bg-blue-50/70 border border-blue-200">
+                <div className="text-[10px] font-bold uppercase tracking-wider text-blue-900 flex items-center justify-between">
+                  <span className="flex items-center gap-1">
+                    <Send className="w-3 h-3 text-[#1E4E8C]" />
+                    1. Destino Regulatorio (Módulo D)
+                  </span>
+                  <span className="px-1.5 py-0.2 rounded bg-blue-200 text-blue-900 text-[9px] font-bold">
+                    {linkedAssociations.length > 0 ? `${linkedAssociations.length} asociación(es)` : 'Sin asociar'}
+                  </span>
+                </div>
+                <div
+                  className="mt-1 font-bold text-slate-900 truncate"
+                  title={
+                    linkedAssociations.length > 0
+                      ? `${activeFormat.code} — ${activeFormat.name}`
+                      : 'Pendiente de vincular en Módulo D'
+                  }
+                >
+                  {linkedAssociations.length > 0
+                    ? `${activeFormat.code} — ${activeFormat.name}`
+                    : 'Formato regulatorio pendiente de vincular en Módulo D'}
+                </div>
+                <div className="text-[11px] text-slate-600 mt-0.5">
+                  Canal / Transmisión:{' '}
+                  <strong className="text-slate-800">
+                    {linkedAssociations[0]?.transmissionTypeId
+                      ? `${linkedAssociations[0].transmissionTypeId} (${linkedAssociations[0].environment})`
+                      : 'A definir en asociaciones'}
+                  </strong>
+                </div>
+              </div>
+
+              {/* 2. ESTRUCTURA DE SALIDA EN CONFIGURACIÓN */}
+              <div className="p-2.5 rounded bg-amber-50/70 border border-amber-200">
+                <div className="text-[10px] font-bold uppercase tracking-wider text-amber-900 flex items-center justify-between">
+                  <span className="flex items-center gap-1">
+                    <FileCode2 className="w-3 h-3 text-amber-700" />
+                    2. Estructura de Salida (Configurador)
+                  </span>
+                  <span className="px-1.5 py-0.2 rounded bg-amber-200 text-amber-900 text-[9px] font-bold font-mono">
+                    {draft.code} (v{draft.version})
+                  </span>
+                </div>
+                <div className="mt-1 font-bold text-slate-900 truncate" title={draft.name}>
+                  {draft.name}
+                </div>
+                <div className="text-[11px] text-slate-600 mt-0.5">
+                  Tipo archivo:{' '}
+                  <strong className="text-slate-800">
+                    {selectedOutputType.family} (.{selectedOutputType.extension})
+                  </strong>{' '}
+                  · {draft.fields.length} campos definidos
+                </div>
+              </div>
+
+              {/* 3. ORIGEN DE INFORMACIÓN */}
+              <div className="p-2.5 rounded bg-emerald-50/70 border border-emerald-200">
+                <div className="text-[10px] font-bold uppercase tracking-wider text-emerald-900 flex items-center justify-between">
+                  <span className="flex items-center gap-1">
+                    <Database className="w-3 h-3 text-emerald-700" />
+                    3. Origen de Información (Paso 3)
+                  </span>
+                  <span className="px-1.5 py-0.2 rounded bg-emerald-200 text-emerald-900 text-[9px] font-bold">
+                    {selectedDataContract.originRoute === 'Fuente proporcionada por el cliente'
+                      ? 'Fuente Cliente'
+                      : 'Formato Sistema'}
+                  </span>
+                </div>
+                <div
+                  className="mt-1 font-bold text-slate-900 truncate"
+                  title={activeCatalogEntry?.reportName || selectedDataContract.name}
+                >
+                  {activeCatalogEntry?.reportName || selectedDataContract.name}
+                </div>
+                <div className="text-[11px] text-slate-600 mt-0.5">
+                  Lote para {globalPeriod}:{' '}
+                  <strong
+                    className={
+                      compiledResult.resolvedPrimaryBatch
+                        ? 'text-emerald-700'
+                        : 'text-rose-700'
+                    }
+                  >
+                    {compiledResult.resolvedPrimaryBatch
+                      ? `${compiledResult.rowsProcessed} registros (${compiledResult.resolvedPrimaryBatch.executionCode})`
+                      : 'Sin lote compatible'}
+                  </strong>
+                </div>
               </div>
             </div>
-            {currentStepGuidance.nextStep !== builderStep && (
-              <button
-                type="button"
-                onClick={() => setBuilderStep(currentStepGuidance.nextStep)}
-                className="mt-2 px-2.5 py-1 rounded bg-[#1E4E8C] hover:bg-[#163A69] text-white text-[11px] font-bold inline-flex items-center justify-center gap-1 cursor-pointer transition-colors"
-              >
-                <span>Avanzar al Paso {currentStepGuidance.nextStep}</span>
-                <ArrowRight className="w-3.5 h-3.5" />
-              </button>
-            )}
           </div>
-        </div>
 
-        {/* Fila 3: Barra de Acciones Asistidas de TOTALiA® */}
-        <div className="pt-1 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
-          <div className="flex items-center gap-2">
-            <div className="w-6 h-6 rounded bg-gradient-to-br from-indigo-700 to-purple-800 text-white flex items-center justify-center shrink-0 shadow-xs">
-              <Sparkles className="w-3.5 h-3.5 text-sky-200" />
+          {/* GUÍA DE PASO Y ASISTENTE CONTEXTUAL TOTALiA® */}
+          <div className="bg-white border border-slate-200 rounded-lg p-4 shadow-xs space-y-3.5">
+            {/* Fila 1: Estados de avance y capacidades operativas independientes */}
+            <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 pb-3 border-b border-slate-200">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
+                  Estado de avance:
+                </span>
+                <span
+                  className={`px-2.5 py-1 rounded-md text-xs font-bold border inline-flex items-center gap-1.5 ${advancementState.badgeClass}`}
+                >
+                  {advancementState.label}
+                </span>
+                <span className="text-[11px] text-slate-500 hidden sm:inline">
+                  · {advancementState.desc}
+                </span>
+              </div>
+
+              {/* Tres indicadores independientes (no deducidos uno de otro) */}
+              <div className="flex flex-wrap items-center gap-2 text-[11px]">
+                <span
+                  title="Guardado de borrador siempre disponible. Se almacena localmente en su navegador."
+                  className="px-2 py-0.5 rounded bg-slate-100 text-slate-700 border border-slate-200 font-medium inline-flex items-center gap-1"
+                >
+                  <Save className="w-3 h-3 text-slate-500" />
+                  Borrador: <strong className="text-slate-900">Permitido (Navegador)</strong>
+                </span>
+
+                <span
+                  title={
+                    canDownloadPhysicalArtifact
+                      ? 'Archivo físico listo con lote compatible'
+                      : `Generación física en espera de lote compatible para ${globalPeriod} (CES-DAT-000)`
+                  }
+                  className={`px-2 py-0.5 rounded border font-medium inline-flex items-center gap-1 ${
+                    canDownloadPhysicalArtifact
+                      ? 'bg-emerald-50 text-emerald-900 border-emerald-300'
+                      : 'bg-amber-50 text-amber-950 border-amber-300'
+                  }`}
+                >
+                  <FileCode2 className="w-3 h-3" />
+                  Generación:{' '}
+                  <strong>
+                    {canDownloadPhysicalArtifact ? 'Habilitada' : 'Espera lote (CES-DAT-000)'}
+                  </strong>
+                </span>
+
+                <span
+                  title={
+                    isImmutable
+                      ? 'Versión protegida (Inmutable). Cree una nueva revisión para publicar cambios.'
+                      : structuralBlockingCount === 0
+                      ? 'Estructura válida para publicar'
+                      : `Bloqueado por ${structuralBlockingCount} error(es) de estructura`
+                  }
+                  className={`px-2 py-0.5 rounded border font-medium inline-flex items-center gap-1 ${
+                    isImmutable
+                      ? 'bg-slate-100 text-slate-700 border-slate-300'
+                      : structuralBlockingCount === 0
+                      ? 'bg-blue-50 text-blue-900 border-blue-300'
+                      : 'bg-rose-50 text-rose-950 border-rose-300'
+                  }`}
+                >
+                  <Send className="w-3 h-3" />
+                  Publicación:{' '}
+                  <strong>
+                    {isImmutable
+                      ? 'Inmutable'
+                      : structuralBlockingCount === 0
+                      ? 'Habilitada'
+                      : 'Bloqueada'}
+                  </strong>
+                </span>
+              </div>
             </div>
-            <span className="text-xs font-bold text-slate-900 flex items-center gap-1.5">
-              <span>TOTALiA® Contextual</span>
-              <HelpTooltip
-                title="Asistencia Contextual TOTALiA®"
-                description="Analiza especificaciones registradas, contratos de datos y reglas técnicas de la familia de archivo para recomendar ajustes justificados y trazables. Todas las sugerencias se aplican de forma controlada sobre un borrador."
-              />
-            </span>
+
+            {/* Fila 2: Orientación breve vinculada al paso activo */}
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-3 bg-slate-50/80 p-3 rounded-lg border border-slate-200/80 text-xs">
+              <div>
+                <div className="font-bold text-slate-700 uppercase text-[10px] tracking-wider">
+                  Qué está configurando
+                </div>
+                <div className="text-slate-900 mt-0.5 leading-snug">
+                  {currentStepGuidance.whatConfiguring}
+                </div>
+              </div>
+              <div>
+                <div className="font-bold text-slate-700 uppercase text-[10px] tracking-wider">
+                  Qué información necesita
+                </div>
+                <div className="text-slate-900 mt-0.5 leading-snug">
+                  {currentStepGuidance.whatNeeded}
+                </div>
+              </div>
+              <div>
+                <div className="font-bold text-slate-700 uppercase text-[10px] tracking-wider">
+                  Qué falta por completar
+                </div>
+                <div
+                  className={`mt-0.5 leading-snug font-medium ${
+                    currentStepGuidance.whatMissing.includes('Falta') ||
+                    currentStepGuidance.whatMissing.includes('Existen') ||
+                    currentStepGuidance.whatMissing.includes('Complete')
+                      ? 'text-amber-900'
+                      : 'text-slate-700'
+                  }`}
+                >
+                  {currentStepGuidance.whatMissing}
+                </div>
+              </div>
+              <div className="flex flex-col justify-between">
+                <div>
+                  <div className="font-bold text-slate-700 uppercase text-[10px] tracking-wider">
+                    Siguiente acción
+                  </div>
+                  <div className="text-[#1E4E8C] font-bold mt-0.5 leading-snug">
+                    {currentStepGuidance.nextAction}
+                  </div>
+                </div>
+                {currentStepGuidance.nextStep !== builderStep && (
+                  <button
+                    type="button"
+                    onClick={() => setBuilderStep(currentStepGuidance.nextStep)}
+                    className="mt-2 px-2.5 py-1 rounded bg-[#1E4E8C] hover:bg-[#163A69] text-white text-[11px] font-bold inline-flex items-center justify-center gap-1 cursor-pointer transition-colors"
+                  >
+                    <span>Avanzar al Paso {currentStepGuidance.nextStep}</span>
+                    <ArrowRight className="w-3.5 h-3.5" />
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {/* Fila 3: Barra de Acciones Asistidas de TOTALiA® */}
+            <div className="pt-1 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+              <div className="flex items-center gap-2">
+                <div className="w-7 h-7 rounded bg-[#0F1F38] flex items-center justify-center shrink-0 shadow-xs p-0.5">
+                  <TotalReportLogo className="w-6 h-6 object-contain" alt="Logo TOTALiA®" />
+                </div>
+                <span className="text-xs font-bold text-slate-900 flex items-center gap-1.5">
+                  <span>TOTALiA® Contextual</span>
+                  <HelpTooltip
+                    title="Asistencia Contextual TOTALiA®"
+                    description="Analiza especificaciones registradas, contratos de datos y reglas técnicas de la familia de archivo para recomendar ajustes justificados y trazables. Todas las sugerencias se aplican de forma controlada sobre un borrador."
+                  />
+                </span>
+              </div>
+
+              {/* Botones de Acciones Sugeridas */}
+              <div className="flex flex-wrap items-center gap-1.5 text-xs">
+                <button
+                  type="button"
+                  disabled={isImmutable}
+                  onClick={() => setShowAnnexImportModal(true)}
+                  className="px-2.5 py-1 rounded-md bg-[#0F1F38] text-white hover:bg-[#1E4E8C] disabled:bg-slate-300 font-semibold cursor-pointer inline-flex items-center gap-1.5 transition-colors"
+                >
+                  <Upload className="w-3.5 h-3.5" />
+                  <span>Importar anexo normativo</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => openTotaliaWithAction('siguiente_paso')}
+                  className="px-2.5 py-1 rounded-md bg-indigo-50 border border-indigo-200 text-indigo-900 hover:bg-indigo-100 font-semibold cursor-pointer inline-flex items-center gap-1 transition-colors"
+                >
+                  <ArrowRight className="w-3.5 h-3.5 text-indigo-700" />
+                  <span>Indicar siguiente paso</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => openTotaliaWithAction('revisar_estructura')}
+                  className="px-2.5 py-1 rounded-md bg-blue-50 border border-blue-200 text-blue-900 hover:bg-blue-100 font-semibold cursor-pointer inline-flex items-center gap-1 transition-colors"
+                >
+                  <Sliders className="w-3.5 h-3.5 text-blue-700" />
+                  <span>Revisar mi estructura</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => openTotaliaWithAction('sugerir_mapeos')}
+                  className="px-2.5 py-1 rounded-md bg-emerald-50 border border-emerald-200 text-emerald-900 hover:bg-emerald-100 font-semibold cursor-pointer inline-flex items-center gap-1 transition-colors"
+                >
+                  <Database className="w-3.5 h-3.5 text-emerald-700" />
+                  <span>Sugerir correspondencias</span>
+                </button>
+
+                {configDiagnostics.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => openTotaliaWithAction('explicar_error')}
+                    className="px-2.5 py-1 rounded-md bg-rose-100 border border-rose-300 text-rose-950 hover:bg-rose-200 font-bold cursor-pointer inline-flex items-center gap-1"
+                  >
+                    <AlertCircle className="w-3.5 h-3.5 text-rose-700" />
+                    <span>Explicar este error ({configDiagnostics.length})</span>
+                  </button>
+                )}
+
+                <button
+                  type="button"
+                  onClick={() => openTotaliaWithAction('ayudame_a_crear')}
+                  className="px-2.5 py-1 rounded-md bg-purple-50 border border-purple-200 text-purple-900 hover:bg-purple-100 font-semibold cursor-pointer inline-flex items-center gap-1 transition-colors"
+                >
+                  <Sparkles className="w-3.5 h-3.5 text-purple-700" />
+                  <span>Ayúdame a crear esta salida</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => openTotaliaWithAction('evaluar_impacto')}
+                  className="px-2.5 py-1 rounded-md bg-slate-100 border border-slate-200 text-slate-700 hover:bg-slate-200 font-semibold cursor-pointer inline-flex items-center gap-1 transition-colors"
+                >
+                  <ShieldAlert className="w-3.5 h-3.5 text-slate-600" />
+                  <span>Evaluar impacto</span>
+                </button>
+              </div>
+            </div>
           </div>
-
-          {/* Botones de Acciones Sugeridas */}
-          <div className="flex flex-wrap items-center gap-1.5 text-xs">
-            <button
-              type="button"
-              onClick={() => openTotaliaWithAction('siguiente_paso')}
-              className="px-2.5 py-1 rounded-md bg-indigo-50 border border-indigo-200 text-indigo-900 hover:bg-indigo-100 font-semibold cursor-pointer inline-flex items-center gap-1 transition-colors"
-            >
-              <ArrowRight className="w-3.5 h-3.5 text-indigo-700" />
-              <span>Indicar siguiente paso</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => openTotaliaWithAction('revisar_estructura')}
-              className="px-2.5 py-1 rounded-md bg-blue-50 border border-blue-200 text-blue-900 hover:bg-blue-100 font-semibold cursor-pointer inline-flex items-center gap-1 transition-colors"
-            >
-              <Sliders className="w-3.5 h-3.5 text-blue-700" />
-              <span>Revisar mi estructura</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => openTotaliaWithAction('sugerir_mapeos')}
-              className="px-2.5 py-1 rounded-md bg-emerald-50 border border-emerald-200 text-emerald-900 hover:bg-emerald-100 font-semibold cursor-pointer inline-flex items-center gap-1 transition-colors"
-            >
-              <Database className="w-3.5 h-3.5 text-emerald-700" />
-              <span>Sugerir correspondencias</span>
-            </button>
-
-            {configDiagnostics.length > 0 && (
-              <button
-                type="button"
-                onClick={() => openTotaliaWithAction('explicar_error')}
-                className="px-2.5 py-1 rounded-md bg-rose-100 border border-rose-300 text-rose-950 hover:bg-rose-200 font-bold cursor-pointer inline-flex items-center gap-1 animate-pulse"
-              >
-                <AlertCircle className="w-3.5 h-3.5 text-rose-700" />
-                <span>Explicar este error ({configDiagnostics.length})</span>
-              </button>
-            )}
-
-            <button
-              type="button"
-              onClick={() => openTotaliaWithAction('ayudame_a_crear')}
-              className="px-2.5 py-1 rounded-md bg-purple-50 border border-purple-200 text-purple-900 hover:bg-purple-100 font-semibold cursor-pointer inline-flex items-center gap-1 transition-colors"
-            >
-              <Sparkles className="w-3.5 h-3.5 text-purple-700" />
-              <span>Ayúdame a crear esta salida</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => openTotaliaWithAction('evaluar_impacto')}
-              className="px-2.5 py-1 rounded-md bg-slate-100 border border-slate-200 text-slate-700 hover:bg-slate-200 font-semibold cursor-pointer inline-flex items-center gap-1 transition-colors"
-            >
-              <ShieldAlert className="w-3.5 h-3.5 text-slate-600" />
-              <span>Evaluar impacto</span>
-            </button>
-          </div>
-        </div>
-      </div>
-
       {/* STEP 1: DATOS GENERALES */}
       {builderStep === 1 && (
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
@@ -1669,164 +1737,182 @@ export const VisualOutputBuilderView: React.FC = () => {
             )}
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5 text-xs">
-              <div className="sm:col-span-2">
-                <label className="block font-semibold text-slate-800 mb-1">
-                  Nombre funcional de la salida *
-                  <HelpTooltip
-                    title="Nombre funcional de la salida"
-                    description="Nombre descriptivo para identificar el propósito del archivo en el catálogo y en los reportes de auditoría."
-                    example="Saldos y Cartera · Plano Delimitado CSV"
+                <div className="sm:col-span-2">
+                  <label className="block font-semibold text-slate-800 mb-1">
+                    Nombre funcional de la salida *
+                    <HelpTooltip
+                      title="Nombre funcional de la salida"
+                      description="Nombre descriptivo para identificar el propósito del archivo en el catálogo y en los reportes de auditoría."
+                      example="Saldos y Cartera · Plano Delimitado CSV"
+                    />
+                  </label>
+                  <input
+                    type="text"
+                    disabled={isImmutable}
+                    value={draft.name}
+                    onChange={(e) => updateDraft((p) => ({ ...p, name: e.target.value }))}
+                    className="w-full border border-slate-300 rounded px-3 py-2 text-slate-900 disabled:bg-slate-100"
                   />
-                </label>
-                <input
-                  type="text"
-                  disabled={isImmutable}
-                  value={draft.name}
-                  onChange={(e) => updateDraft((p) => ({ ...p, name: e.target.value }))}
-                  className="w-full border border-slate-300 rounded px-3 py-2 text-slate-900 disabled:bg-slate-100"
-                />
-              </div>
+                </div>
 
-              <div>
-                <label className="block font-semibold text-slate-800 mb-1">
-                  Código identificador *
-                  <HelpTooltip
-                    title="Código identificador único"
-                    description="Identificador corto e invariable de la salida configurada. Las nuevas revisiones conservan este mismo código cambiando únicamente el número de versión."
-                    example="DEMO-CE-02"
-                  />
-                </label>
-                <input
-                  type="text"
-                  disabled={isImmutable}
-                  value={draft.code}
-                  onChange={(e) =>
-                    updateDraft((p) => ({ ...p, code: e.target.value.toUpperCase() }))
-                  }
-                  className="w-full border border-slate-300 rounded px-3 py-2 font-mono font-bold text-slate-900 disabled:bg-slate-100"
-                />
-              </div>
-
-              <div>
-                <label className="block font-semibold text-slate-800 mb-1">
-                  Tipo de archivo (Tipo de salida) *
-                  <HelpTooltip
-                    title="Tipo de archivo reutilizable"
-                    description="Define la familia técnica del archivo (CSV, TXT, XML, AVRO, XBRL, PDF o XLSX) y habilita los controles específicos de esa representación."
-                    consequence="Cambiar el tipo de archivo adapta los parámetros de representación del panel derecho conservando la lista de campos."
-                  />
-                </label>
-                <select
-                  aria-label="Tipo de archivo de la salida"
-                  disabled={isImmutable}
-                  value={draft.outputTypeId}
-                  onChange={(e) => {
-                    if (e.target.value !== draft.outputTypeId) {
-                      setPendingOutputTypeId(e.target.value);
+                <div>
+                  <label className="block font-semibold text-slate-800 mb-1">
+                    Código identificador *
+                    <HelpTooltip
+                      title="Código identificador único"
+                      description="Identificador corto e invariable de la salida configurada. Las nuevas revisiones conservan este mismo código cambiando únicamente el número de versión."
+                      example="DEMO-CE-02"
+                    />
+                  </label>
+                  <input
+                    type="text"
+                    disabled={isImmutable}
+                    value={draft.code}
+                    onChange={(e) =>
+                      updateDraft((p) => ({ ...p, code: e.target.value.toUpperCase() }))
                     }
-                  }}
-                  className="w-full border border-slate-300 rounded px-3 py-2 bg-white font-semibold text-slate-900 disabled:bg-slate-100"
-                >
-                  {outputTypes.map((ot) => (
-                    <option key={ot.id} value={ot.id}>
-                      {ot.family} — {ot.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div>
-                <label className="block font-semibold text-slate-800 mb-1">
-                  Entidad supervisora / Reguladora *
-                </label>
-                <input
-                  type="text"
-                  disabled={isImmutable}
-                  value={draft.regulator}
-                  onChange={(e) =>
-                    updateDraft((p) => ({ ...p, regulator: e.target.value }))
-                  }
-                  className="w-full border border-slate-300 rounded px-3 py-2 text-slate-900 disabled:bg-slate-100"
-                />
-              </div>
-
-              <div>
-                <label className="block font-semibold text-slate-800 mb-1">
-                  Jurisdicción / País
-                </label>
-                <select
-                  disabled={isImmutable}
-                  value={draft.jurisdiction}
-                  onChange={(e) =>
-                    updateDraft((p) => ({
-                      ...p,
-                      jurisdiction: e.target.value as ConfiguredOutput['jurisdiction'],
-                    }))
-                  }
-                  className="w-full border border-slate-300 rounded px-3 py-2 bg-white text-slate-900 disabled:bg-slate-100"
-                >
-                  <option value="Colombia">Colombia</option>
-                  <option value="Perú">Perú</option>
-                  <option value="Multirregulador">Multirregulador</option>
-                </select>
-              </div>
-
-              <div>
-                <label className="block font-semibold text-slate-800 mb-1">
-                  Versión de la configuración
-                  <HelpTooltip
-                    title="Número de versión"
-                    description="Identifica la revisión específica de esta salida (ej. 1.4, 2.0, 3.1). Permite que distintos formatos regulatorios apunten a versiones específicas sin afectarse entre sí."
+                    className="w-full border border-slate-300 rounded px-3 py-2 font-mono font-bold text-slate-900 disabled:bg-slate-100"
                   />
-                </label>
-                <input
-                  type="text"
-                  disabled={isImmutable}
-                  value={draft.version}
-                  onChange={(e) =>
-                    updateDraft((p) => ({ ...p, version: e.target.value }))
-                  }
-                  className="w-full border border-slate-300 rounded px-3 py-2 font-mono text-slate-900 disabled:bg-slate-100"
-                />
-              </div>
+                </div>
 
-              <div>
-                <label className="block font-semibold text-slate-800 mb-1">
-                  Vigencia desde (AAAA-MM-DD)
-                  <HelpTooltip
-                    title="Fecha de inicio de vigencia"
-                    description="Fecha a partir de la cual esta versión de la salida es elegible para ser utilizada en entregas regulatorias."
+                <div>
+                  <label className="block font-semibold text-slate-800 mb-1">
+                    Tipo de archivo (Tipo de salida) *
+                    <HelpTooltip
+                      title="Tipo de archivo reutilizable"
+                      description="Define la familia técnica del archivo (CSV, TXT, XML, AVRO, XBRL, PDF o XLSX) y habilita los controles específicos de esa representación."
+                      consequence="Cambiar el tipo de archivo adapta los parámetros de representación del panel derecho conservando la lista de campos."
+                    />
+                  </label>
+                  <select
+                    aria-label="Tipo de archivo de la salida"
+                    disabled={isImmutable}
+                    value={draft.outputTypeId}
+                    onChange={(e) => {
+                      if (e.target.value !== draft.outputTypeId) {
+                        setPendingOutputTypeId(e.target.value);
+                      }
+                    }}
+                    className="w-full border border-slate-300 rounded px-3 py-2 bg-white font-semibold text-slate-900 disabled:bg-slate-100"
+                  >
+                    {outputTypes.map((ot) => (
+                      <option key={ot.id} value={ot.id}>
+                        {ot.family} — {ot.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block font-semibold text-slate-800 mb-1">
+                    Entidad supervisora / Reguladora *
+                  </label>
+                  <input
+                    type="text"
+                    disabled={isImmutable}
+                    value={draft.regulator}
+                    onChange={(e) =>
+                      updateDraft((p) => ({ ...p, regulator: e.target.value }))
+                    }
+                    className="w-full border border-slate-300 rounded px-3 py-2 text-slate-900 disabled:bg-slate-100"
                   />
-                </label>
-                <input
-                  type="text"
-                  disabled={isImmutable}
-                  value={draft.validFrom}
-                  onChange={(e) =>
-                    updateDraft((p) => ({ ...p, validFrom: e.target.value }))
-                  }
-                  className="w-full border border-slate-300 rounded px-3 py-2 font-mono text-slate-900 disabled:bg-slate-100"
-                />
-              </div>
+                </div>
 
-              <div className="sm:col-span-2">
-                <label className="block font-semibold text-slate-800 mb-1">
-                  Descripción funcional y alcance normativo
-                </label>
-                <textarea
-                  rows={3}
-                  disabled={isImmutable}
-                  value={draft.description}
-                  onChange={(e) =>
-                    updateDraft((p) => ({ ...p, description: e.target.value }))
-                  }
-                  className="w-full border border-slate-300 rounded p-2.5 text-slate-900 disabled:bg-slate-100"
-                />
+                <div>
+                  <label className="block font-semibold text-slate-800 mb-1">
+                    Jurisdicción / País
+                  </label>
+                  <select
+                    disabled={isImmutable}
+                    value={draft.jurisdiction}
+                    onChange={(e) =>
+                      updateDraft((p) => ({
+                        ...p,
+                        jurisdiction: e.target.value as ConfiguredOutput['jurisdiction'],
+                      }))
+                    }
+                    className="w-full border border-slate-300 rounded px-3 py-2 bg-white text-slate-900 disabled:bg-slate-100"
+                  >
+                    <optgroup label="América">
+                      {AMERICAS_AND_EUROPE_COUNTRIES.filter((c) => c.region === 'América').map(
+                        (c) => (
+                          <option key={c.country} value={c.country}>
+                            {c.country}
+                          </option>
+                        )
+                      )}
+                    </optgroup>
+                    <optgroup label="Europa">
+                      {AMERICAS_AND_EUROPE_COUNTRIES.filter((c) => c.region === 'Europa').map(
+                        (c) => (
+                          <option key={c.country} value={c.country}>
+                            {c.country}
+                          </option>
+                        )
+                      )}
+                    </optgroup>
+                    <optgroup label="Global / Regional">
+                      <option value="Multirregulador">Multirregulador</option>
+                    </optgroup>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block font-semibold text-slate-800 mb-1">
+                    Versión de la configuración
+                    <HelpTooltip
+                      title="Número de versión"
+                      description="Identifica la revisión específica de esta salida (ej. 1.4, 2.0, 3.1). Permite que distintos formatos regulatorios apunten a versiones específicas sin afectarse entre sí."
+                    />
+                  </label>
+                  <input
+                    type="text"
+                    disabled={isImmutable}
+                    value={draft.version}
+                    onChange={(e) =>
+                      updateDraft((p) => ({ ...p, version: e.target.value }))
+                    }
+                    className="w-full border border-slate-300 rounded px-3 py-2 font-mono text-slate-900 disabled:bg-slate-100"
+                  />
+                </div>
+
+                <div>
+                  <label className="block font-semibold text-slate-800 mb-1">
+                    Vigencia desde (AAAA-MM-DD)
+                    <HelpTooltip
+                      title="Fecha de inicio de vigencia"
+                      description="Fecha a partir de la cual esta versión de la salida es elegible para ser utilizada en entregas regulatorias."
+                    />
+                  </label>
+                  <input
+                    type="text"
+                    disabled={isImmutable}
+                    value={draft.validFrom}
+                    onChange={(e) =>
+                      updateDraft((p) => ({ ...p, validFrom: e.target.value }))
+                    }
+                    className="w-full border border-slate-300 rounded px-3 py-2 font-mono text-slate-900 disabled:bg-slate-100"
+                  />
+                </div>
+
+                <div className="sm:col-span-2">
+                  <label className="block font-semibold text-slate-800 mb-1">
+                    Descripción funcional y alcance normativo
+                  </label>
+                  <textarea
+                    rows={3}
+                    disabled={isImmutable}
+                    value={draft.description}
+                    onChange={(e) =>
+                      updateDraft((p) => ({ ...p, description: e.target.value }))
+                    }
+                    className="w-full border border-slate-300 rounded p-2.5 text-slate-900 disabled:bg-slate-100"
+                  />
+                </div>
               </div>
-            </div>
           </div>
 
-          {/* Right Panel in Step 1: Format-Specific Parameters Tailored to Selected Family */}
+          {/* Right Panel in Step 1: Format-Specific Parameters */}
           <div className="lg:col-span-5 bg-white border border-slate-200 rounded-md p-5 space-y-4">
             <div className="border-b border-slate-200 pb-3">
               <span className="text-[11px] font-bold uppercase tracking-wider text-[#1E4E8C]">
@@ -1837,7 +1923,7 @@ export const VisualOutputBuilderView: React.FC = () => {
                 <HelpTooltip
                   align="right"
                   title={`Parámetros de familia ${selectedOutputType.family}`}
-                  description="Aquí solo se muestran las propiedades técnicas que realmente aplican al formato de archivo seleccionado y que intervienen en su generación o validación de esquema."
+                  description="Propiedades técnicas que intervienen en la serialización y validación del formato seleccionado."
                 />
               </h3>
             </div>
@@ -2496,7 +2582,7 @@ export const VisualOutputBuilderView: React.FC = () => {
       {/* STEP 2: ESTRUCTURA DEL ARCHIVO */}
       {builderStep === 2 && (
         <div className="space-y-4">
-          {/* Family-Specific Visual Structure Representation Banner (TXT positional ruler / XML tree) */}
+          {/* Family-Specific Visual Structure Representation Banner */}
           {selectedOutputType.family === 'TXT' && (
             <div className="bg-white border border-slate-200 rounded-md p-4 space-y-2.5">
               <div className="flex flex-wrap items-center justify-between gap-2">
@@ -2639,10 +2725,10 @@ export const VisualOutputBuilderView: React.FC = () => {
             </div>
           )}
 
-          {/* Main 12-Col Workspace: Editable Fields Table (7 cols) + Field Property Inspector (5 cols) */}
+          {/* Main 12-Col Workspace: Editable Fields Table + Field Property Inspector */}
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
-            {/* Left: Editable Table of Fields (7 cols) */}
-            <div className="lg:col-span-7 bg-white border border-slate-200 rounded-md flex flex-col">
+            {/* Left: Editable Table of Fields */}
+            <div className="lg:col-span-7 bg-white border border-slate-200 rounded-md flex flex-col min-w-0">
               <div className="p-3.5 border-b border-slate-200 flex flex-wrap items-center justify-between gap-2">
                 <div>
                   <h2 className="text-sm font-bold text-slate-900">
@@ -2654,14 +2740,24 @@ export const VisualOutputBuilderView: React.FC = () => {
                 </div>
 
                 {!isImmutable && (
-                  <button
-                    type="button"
-                    onClick={handleAddField}
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded bg-[#1E4E8C] text-white text-xs font-semibold hover:bg-[#163A69] cursor-pointer"
-                  >
-                    <Plus className="w-3.5 h-3.5" />
-                    Agregar campo
-                  </button>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setShowAnnexImportModal(true)}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded border border-slate-300 bg-white text-slate-800 text-xs font-semibold hover:bg-slate-50 cursor-pointer"
+                    >
+                      <Upload className="w-3.5 h-3.5 text-[#1E4E8C]" />
+                      Importar anexo (TOTALiA®)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleAddField}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded bg-[#1E4E8C] text-white text-xs font-semibold hover:bg-[#163A69] cursor-pointer"
+                    >
+                      <Plus className="w-3.5 h-3.5" />
+                      Agregar campo
+                    </button>
+                  </div>
                 )}
               </div>
 
@@ -2669,19 +2765,19 @@ export const VisualOutputBuilderView: React.FC = () => {
                 <table className="w-full text-left border-collapse text-xs">
                   <thead>
                     <tr className="bg-slate-50 border-b border-slate-200 text-[11px] font-semibold text-slate-600 uppercase">
-                      <th className="py-2 px-2.5">#</th>
+                      <th className="py-2 px-2">#</th>
                       {selectedOutputType.family === 'TXT' && (
                         <th className="py-2 px-2">Pos [Ini..Fin]</th>
                       )}
                       {selectedOutputType.family === 'XML' && (
                         <th className="py-2 px-2">Nodo XML</th>
                       )}
-                      <th className="py-2 px-2.5">Nombre Técnico / Etiqueta</th>
+                      <th className="py-2 px-2">Nombre Técnico / Etiqueta</th>
                       <th className="py-2 px-2">Tipo de Dato</th>
                       <th className="py-2 px-2">Longitud</th>
-                      <th className="py-2 px-2">Oblig.</th>
+                      <th className="py-2 px-1.5 text-center">Oblig.</th>
                       <th className="py-2 px-2">Origen (Paso 3)</th>
-                      <th className="py-2 px-2.5 text-right">Acciones</th>
+                      <th className="py-2 px-2 text-right">Acciones</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-200">
@@ -2692,6 +2788,12 @@ export const VisualOutputBuilderView: React.FC = () => {
                       );
                       const startPos = f.startPosition || 1;
                       const endPos = startPos + Math.max(1, f.length) - 1;
+                      const hasAssignedOrigin = Boolean(
+                        f.mapping.sourceField ||
+                          f.mapping.transformationKind === 'Constante' ||
+                          f.mapping.transformationKind === 'Variable de contexto' ||
+                          f.mapping.transformationKind === 'Concatenación tipada'
+                      );
 
                       return (
                         <tr
@@ -2705,7 +2807,7 @@ export const VisualOutputBuilderView: React.FC = () => {
                               : 'hover:bg-slate-50'
                           }`}
                         >
-                          <td className="py-2 px-2.5 font-mono font-bold text-slate-700 tabular-nums">
+                          <td className="py-2 px-2 font-mono font-bold text-slate-700 tabular-nums">
                             {f.order}
                           </td>
 
@@ -2729,7 +2831,7 @@ export const VisualOutputBuilderView: React.FC = () => {
                             </td>
                           )}
 
-                          <td className="py-2 px-2.5">
+                          <td className="py-2 px-2">
                             <input
                               type="text"
                               aria-label={`Nombre técnico campo ${f.order}`}
@@ -2751,11 +2853,10 @@ export const VisualOutputBuilderView: React.FC = () => {
                               aria-label={`Tipo de dato campo ${f.order}`}
                               disabled={isImmutable}
                               value={f.dataType}
-                              onChange={(e) =>
-                                handleUpdateField(f.id, {
-                                  dataType: e.target.value as StructureField['dataType'],
-                                })
-                              }
+                              onChange={(e) => {
+                                const nextType = e.target.value as StructureField['dataType'];
+                                handleUpdateField(f.id, { dataType: nextType });
+                              }}
                               onClick={(e) => e.stopPropagation()}
                               className="border border-slate-200 rounded px-1.5 py-1 bg-white text-[11px] text-slate-800"
                             >
@@ -2781,7 +2882,7 @@ export const VisualOutputBuilderView: React.FC = () => {
                                   })
                                 }
                                 onClick={(e) => e.stopPropagation()}
-                                className={`w-16 border rounded px-1.5 py-1 font-mono text-xs tabular-nums ${
+                                className={`w-14 border rounded px-1.5 py-1 font-mono text-xs tabular-nums ${
                                   f.length <= 0
                                     ? 'border-rose-500 bg-rose-50 text-rose-900 font-bold'
                                     : 'border-slate-200 bg-white text-slate-900'
@@ -2793,7 +2894,7 @@ export const VisualOutputBuilderView: React.FC = () => {
                             </div>
                           </td>
 
-                          <td className="py-2 px-2 text-center">
+                          <td className="py-2 px-1.5 text-center">
                             <input
                               type="checkbox"
                               aria-label={`Obligatorio campo ${f.order}`}
@@ -2807,10 +2908,7 @@ export const VisualOutputBuilderView: React.FC = () => {
                           </td>
 
                           <td className="py-2 px-2 font-mono text-[11px]">
-                            {f.mapping.sourceField ||
-                            f.mapping.transformationKind === 'Constante' ||
-                            f.mapping.transformationKind === 'Variable de contexto' ||
-                            f.mapping.transformationKind === 'Concatenación tipada' ? (
+                            {hasAssignedOrigin ? (
                               <span className="text-slate-700">
                                 {f.mapping.sourceField || f.mapping.expression}
                               </span>
@@ -2829,7 +2927,7 @@ export const VisualOutputBuilderView: React.FC = () => {
                             )}
                           </td>
 
-                          <td className="py-2 px-2.5 text-right">
+                          <td className="py-2 px-2 text-right whitespace-nowrap">
                             <div
                               className="inline-flex items-center gap-0.5"
                               onClick={(e) => e.stopPropagation()}
@@ -2880,8 +2978,8 @@ export const VisualOutputBuilderView: React.FC = () => {
               </div>
             </div>
 
-            {/* Right: Detailed Field Property Inspector (5 cols) */}
-            <div className="lg:col-span-5 bg-white border border-slate-200 rounded-md p-4 space-y-3.5">
+            {/* Right: Detailed Field Property Inspector */}
+            <div className="lg:col-span-5 bg-white border border-slate-200 rounded-md p-4 space-y-3.5 min-w-0">
               {selectedField ? (
                 <>
                   <div className="flex items-center justify-between border-b border-slate-200 pb-2.5">
@@ -2899,358 +2997,358 @@ export const VisualOutputBuilderView: React.FC = () => {
                   </div>
 
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
-                    <div>
-                      <label className="block font-semibold text-slate-700 mb-1">
-                        Nombre técnico del campo *
-                        <HelpTooltip
-                          title="Nombre técnico"
-                          description="Identificador del campo en encabezados CSV, etiquetas XML o nombres de propiedad Avro. Evite espacios y caracteres especiales."
-                        />
-                      </label>
-                      <input
-                        type="text"
-                        disabled={isImmutable}
-                        value={selectedField.technicalName}
-                        onChange={(e) =>
-                          handleUpdateField(selectedField.id, {
-                            technicalName: e.target.value,
-                          })
-                        }
-                        className="w-full border border-slate-300 rounded px-2.5 py-1.5 font-mono"
-                      />
-                    </div>
-
-                    <div>
-                      <label className="block font-semibold text-slate-700 mb-1">
-                        Etiqueta / Nombre funcional *
-                      </label>
-                      <input
-                        type="text"
-                        disabled={isImmutable}
-                        value={selectedField.label}
-                        onChange={(e) =>
-                          handleUpdateField(selectedField.id, {
-                            label: e.target.value,
-                          })
-                        }
-                        className="w-full border border-slate-300 rounded px-2.5 py-1.5"
-                      />
-                    </div>
-
-                    <div>
-                      <label className="block font-semibold text-slate-700 mb-1">
-                        Tipo de dato lógico *
-                        <HelpTooltip
-                          title="Tipo de dato lógico"
-                          description="Determina las reglas de validación y formato: Fecha aplica máscara de fecha; Decimal valida precisión y escala; Entero rechaza decimales."
-                        />
-                      </label>
-                      <select
-                        disabled={isImmutable}
-                        value={selectedField.dataType}
-                        onChange={(e) =>
-                          handleUpdateField(selectedField.id, {
-                            dataType: e.target.value as StructureField['dataType'],
-                          })
-                        }
-                        className="w-full border border-slate-300 rounded px-2.5 py-1.5 bg-white"
-                      >
-                        <option value="Texto">Texto</option>
-                        <option value="Entero">Entero</option>
-                        <option value="Decimal">Decimal</option>
-                        <option value="Fecha">Fecha</option>
-                        <option value="Booleano">Booleano</option>
-                        <option value="Catálogo">Catálogo</option>
-                      </select>
-                    </div>
-
-                    <div>
-                      <label className="block font-semibold text-slate-700 mb-1">
-                        Longitud máxima ({selectedField.lengthUnit}) *
-                        <HelpTooltip
-                          title="Longitud máxima permitida"
-                          description="Cantidad máxima de caracteres o bytes UTF-8 admitidos. Si un valor supera esta longitud, el motor bloquea la generación e informa el campo exacto (nunca trunca silenciosamente)."
-                        />
-                      </label>
-                      <div className="flex gap-1.5">
-                        <input
-                          type="number"
-                          disabled={isImmutable}
-                          value={selectedField.length}
-                          onChange={(e) =>
-                            handleUpdateField(selectedField.id, {
-                              length: Number(e.target.value),
-                            })
-                          }
-                          className="w-full border border-slate-300 rounded px-2 py-1.5 font-mono"
-                        />
-                        <select
-                          aria-label="Unidad de longitud del campo"
-                          disabled={isImmutable}
-                          value={selectedField.lengthUnit}
-                          onChange={(e) =>
-                            handleUpdateField(selectedField.id, {
-                              lengthUnit: e.target.value as 'Caracteres' | 'Bytes',
-                            })
-                          }
-                          className="border border-slate-300 rounded px-1.5 py-1.5 bg-white text-[11px]"
-                        >
-                          <option value="Caracteres">Car.</option>
-                          <option value="Bytes">Bytes</option>
-                        </select>
-                      </div>
-                    </div>
-
-                    {selectedField.dataType === 'Decimal' && (
-                      <>
-                        <div>
-                          <label className="block font-semibold text-slate-700 mb-1">
-                            Precisión total (Dígitos)
-                            <HelpTooltip
-                              title="Precisión numérica"
-                              description="Cantidad total máxima de dígitos significativos (parte entera + parte decimal). Ejemplo: en decimal(18,2), la precisión es 18."
-                            />
-                          </label>
-                          <input
-                            type="number"
-                            disabled={isImmutable}
-                            value={selectedField.precision ?? selectedField.length}
-                            onChange={(e) =>
-                              handleUpdateField(selectedField.id, {
-                                precision: Number(e.target.value),
-                              })
-                            }
-                            className="w-full border border-slate-300 rounded px-2 py-1.5 font-mono"
+                      <div>
+                        <label className="block font-semibold text-slate-700 mb-1">
+                          Nombre técnico del campo *
+                          <HelpTooltip
+                            title="Nombre técnico"
+                            description="Identificador del campo en encabezados CSV, etiquetas XML o nombres de propiedad Avro. Evite espacios y caracteres especiales."
                           />
-                        </div>
-                        <div>
-                          <label className="block font-semibold text-slate-700 mb-1">
-                            Escala (Decimales)
-                            <HelpTooltip
-                              title="Escala decimal"
-                              description="Cantidad de posiciones decimales después de la coma o punto. Ejemplo: 2 produce '1234,50'."
-                            />
-                          </label>
-                          <input
-                            type="number"
-                            disabled={isImmutable}
-                            value={selectedField.scale ?? 2}
-                            onChange={(e) =>
-                              handleUpdateField(selectedField.id, {
-                                scale: Number(e.target.value),
-                              })
-                            }
-                            className="w-full border border-slate-300 rounded px-2 py-1.5 font-mono"
-                          />
-                        </div>
-                      </>
-                    )}
-
-                    <div>
-                      <label className="block font-semibold text-slate-700 mb-1">
-                        Formato o máscara
-                        <HelpTooltip
-                          title="Máscara de formato"
-                          description="Para campos Fecha, define el patrón de salida (dd-MM-yyyy, yyyy-MM-dd, yyyyMMdd, dd/MM/yyyy). Para números o textos documenta la regla de representación."
-                          example="dd-MM-yyyy convierte '2026-11-30' en '30-11-2026'."
-                        />
-                      </label>
-                      {selectedField.dataType === 'Fecha' ? (
-                        <select
-                          disabled={isImmutable}
-                          value={selectedField.formatMask || 'yyyy-MM-dd'}
-                          onChange={(e) =>
-                            handleUpdateField(selectedField.id, {
-                              formatMask: e.target.value,
-                            })
-                          }
-                          className="w-full border border-slate-300 rounded px-2.5 py-1.5 font-mono bg-white"
-                        >
-                          <option value="dd-MM-yyyy">dd-MM-yyyy (Ej: 30-11-2026)</option>
-                          <option value="yyyy-MM-dd">yyyy-MM-dd (Ej: 2026-11-30)</option>
-                          <option value="yyyyMMdd">yyyyMMdd (Ej: 20261130)</option>
-                          <option value="dd/MM/yyyy">dd/MM/yyyy (Ej: 30/11/2026)</option>
-                          <option value="yyyy-MM">yyyy-MM (Ej: 2026-11)</option>
-                        </select>
-                      ) : (
+                        </label>
                         <input
                           type="text"
                           disabled={isImmutable}
-                          placeholder="Ej. 0.00 o Texto estándar"
-                          value={selectedField.formatMask || ''}
+                          value={selectedField.technicalName}
                           onChange={(e) =>
                             handleUpdateField(selectedField.id, {
-                              formatMask: e.target.value,
+                              technicalName: e.target.value,
                             })
                           }
                           className="w-full border border-slate-300 rounded px-2.5 py-1.5 font-mono"
                         />
-                      )}
-                    </div>
+                      </div>
 
-                    <div>
-                      <label className="block font-semibold text-slate-700 mb-1">
-                        Valor por defecto (si vacío)
-                        <HelpTooltip
-                          title="Valor predeterminado"
-                          description="Se utiliza únicamente cuando el dato de origen viene vacío y el campo admite nulos o tiene política de valor predeterminado. Los campos obligatorios no nulos nunca se rellenan silenciosamente."
+                      <div>
+                        <label className="block font-semibold text-slate-700 mb-1">
+                          Etiqueta / Nombre funcional *
+                        </label>
+                        <input
+                          type="text"
+                          disabled={isImmutable}
+                          value={selectedField.label}
+                          onChange={(e) =>
+                            handleUpdateField(selectedField.id, {
+                              label: e.target.value,
+                            })
+                          }
+                          className="w-full border border-slate-300 rounded px-2.5 py-1.5"
                         />
-                      </label>
-                      <input
-                        type="text"
-                        disabled={isImmutable}
-                        placeholder="Opcional"
-                        value={selectedField.defaultValue || ''}
-                        onChange={(e) =>
-                          handleUpdateField(selectedField.id, {
-                            defaultValue: e.target.value,
-                          })
-                        }
-                        className="w-full border border-slate-300 rounded px-2.5 py-1.5 font-mono"
-                      />
-                    </div>
+                      </div>
 
-                    <div>
-                      <label className="block font-semibold text-slate-700 mb-1">
-                        Alineación (Relleno)
-                      </label>
-                      <select
-                        disabled={isImmutable}
-                        value={selectedField.alignment}
-                        onChange={(e) =>
-                          handleUpdateField(selectedField.id, {
-                            alignment: e.target.value as 'Izquierda' | 'Derecha',
-                          })
-                        }
-                        className="w-full border border-slate-300 rounded px-2.5 py-1.5 bg-white"
-                      >
-                        <option value="Izquierda">Izquierda (rellena a la derecha)</option>
-                        <option value="Derecha">Derecha (rellena a la izquierda)</option>
-                      </select>
-                    </div>
+                      <div>
+                        <label className="block font-semibold text-slate-700 mb-1">
+                          Tipo de dato lógico *
+                          <HelpTooltip
+                            title="Tipo de dato lógico"
+                            description="Determina las reglas de validación y formato: Fecha aplica máscara de fecha; Decimal valida precisión y escala; Entero rechaza decimales."
+                          />
+                        </label>
+                        <select
+                          disabled={isImmutable}
+                          value={selectedField.dataType}
+                          onChange={(e) =>
+                            handleUpdateField(selectedField.id, {
+                              dataType: e.target.value as StructureField['dataType'],
+                            })
+                          }
+                          className="w-full border border-slate-300 rounded px-2.5 py-1.5 bg-white"
+                        >
+                          <option value="Texto">Texto</option>
+                          <option value="Entero">Entero</option>
+                          <option value="Decimal">Decimal</option>
+                          <option value="Fecha">Fecha</option>
+                          <option value="Booleano">Booleano</option>
+                          <option value="Catálogo">Catálogo</option>
+                        </select>
+                      </div>
 
-                    <div>
-                      <label className="block font-semibold text-slate-700 mb-1">
-                        Carácter de relleno (Padding)
-                        <HelpTooltip
-                          title="Carácter de relleno"
-                          description="Completa la longitud del campo con ceros ('0') o espacios (' ') cuando el valor es más corto que la longitud declarada (ej. '123' con relleno '0' a la derecha y longitud 6 produce '000123')."
-                        />
-                      </label>
-                      <select
-                        disabled={isImmutable}
-                        value={selectedField.paddingChar}
-                        onChange={(e) =>
-                          handleUpdateField(selectedField.id, {
-                            paddingChar: e.target.value as ' ' | '0' | 'Ninguno',
-                          })
-                        }
-                        className="w-full border border-slate-300 rounded px-2.5 py-1.5 bg-white"
-                      >
-                        <option value="Ninguno">Sin relleno</option>
-                        <option value=" ">Espacios (&apos; &apos;)</option>
-                        <option value="0">Ceros (&apos;0&apos;)</option>
-                      </select>
-                    </div>
-
-                    {selectedOutputType.family === 'TXT' && (
-                      <>
-                        <div>
-                          <label className="block font-semibold text-slate-700 mb-1">
-                            Posición inicial (TXT)
-                          </label>
+                      <div>
+                        <label className="block font-semibold text-slate-700 mb-1">
+                          Longitud máxima ({selectedField.lengthUnit}) *
+                          <HelpTooltip
+                            title="Longitud máxima permitida"
+                            description="Cantidad máxima de caracteres o bytes UTF-8 admitidos. Si un valor supera esta longitud, el motor bloquea la generación e informa el campo exacto (nunca trunca silenciosamente)."
+                          />
+                        </label>
+                        <div className="flex gap-1.5">
                           <input
                             type="number"
                             disabled={isImmutable}
-                            value={selectedField.startPosition || 1}
+                            value={selectedField.length}
                             onChange={(e) =>
                               handleUpdateField(selectedField.id, {
-                                startPosition: Number(e.target.value) || 1,
+                                length: Number(e.target.value),
+                              })
+                            }
+                            className="w-full border border-slate-300 rounded px-2 py-1.5 font-mono"
+                          />
+                          <select
+                            aria-label="Unidad de longitud del campo"
+                            disabled={isImmutable}
+                            value={selectedField.lengthUnit}
+                            onChange={(e) =>
+                              handleUpdateField(selectedField.id, {
+                                lengthUnit: e.target.value as 'Caracteres' | 'Bytes',
+                              })
+                            }
+                            className="border border-slate-300 rounded px-1.5 py-1.5 bg-white text-[11px]"
+                          >
+                            <option value="Caracteres">Car.</option>
+                            <option value="Bytes">Bytes</option>
+                          </select>
+                        </div>
+                      </div>
+
+                      {selectedField.dataType === 'Decimal' && (
+                        <>
+                          <div>
+                            <label className="block font-semibold text-slate-700 mb-1">
+                              Precisión total (Dígitos)
+                              <HelpTooltip
+                                title="Precisión numérica"
+                                description="Cantidad total máxima de dígitos significativos (parte entera + parte decimal). Ejemplo: en decimal(18,2), la precisión es 18."
+                              />
+                            </label>
+                            <input
+                              type="number"
+                              disabled={isImmutable}
+                              value={selectedField.precision ?? selectedField.length}
+                              onChange={(e) =>
+                                handleUpdateField(selectedField.id, {
+                                  precision: Number(e.target.value),
+                                })
+                              }
+                              className="w-full border border-slate-300 rounded px-2 py-1.5 font-mono"
+                            />
+                          </div>
+                          <div>
+                            <label className="block font-semibold text-slate-700 mb-1">
+                              Escala (Decimales)
+                              <HelpTooltip
+                                title="Escala decimal"
+                                description="Cantidad de posiciones decimales después de la coma o punto. Ejemplo: 2 produce '1234,50'."
+                              />
+                            </label>
+                            <input
+                              type="number"
+                              disabled={isImmutable}
+                              value={selectedField.scale ?? 2}
+                              onChange={(e) =>
+                                handleUpdateField(selectedField.id, {
+                                  scale: Number(e.target.value),
+                                })
+                              }
+                              className="w-full border border-slate-300 rounded px-2 py-1.5 font-mono"
+                            />
+                          </div>
+                        </>
+                      )}
+
+                      <div>
+                        <label className="block font-semibold text-slate-700 mb-1">
+                          Formato o máscara
+                          <HelpTooltip
+                            title="Máscara de formato"
+                            description="Para campos Fecha, define el patrón de salida (dd-MM-yyyy, yyyy-MM-dd, yyyyMMdd, dd/MM/yyyy). Para números o textos documenta la regla de representación."
+                            example="dd-MM-yyyy convierte '2026-11-30' en '30-11-2026'."
+                          />
+                        </label>
+                        {selectedField.dataType === 'Fecha' ? (
+                          <select
+                            disabled={isImmutable}
+                            value={selectedField.formatMask || 'yyyy-MM-dd'}
+                            onChange={(e) =>
+                              handleUpdateField(selectedField.id, {
+                                formatMask: e.target.value,
+                              })
+                            }
+                            className="w-full border border-slate-300 rounded px-2.5 py-1.5 font-mono bg-white"
+                          >
+                            <option value="dd-MM-yyyy">dd-MM-yyyy (Ej: 30-11-2026)</option>
+                            <option value="yyyy-MM-dd">yyyy-MM-dd (Ej: 2026-11-30)</option>
+                            <option value="yyyyMMdd">yyyyMMdd (Ej: 20261130)</option>
+                            <option value="dd/MM/yyyy">dd/MM/yyyy (Ej: 30/11/2026)</option>
+                            <option value="yyyy-MM">yyyy-MM (Ej: 2026-11)</option>
+                          </select>
+                        ) : (
+                          <input
+                            type="text"
+                            disabled={isImmutable}
+                            placeholder="Ej. 0.00 o Texto estándar"
+                            value={selectedField.formatMask || ''}
+                            onChange={(e) =>
+                              handleUpdateField(selectedField.id, {
+                                formatMask: e.target.value,
                               })
                             }
                             className="w-full border border-slate-300 rounded px-2.5 py-1.5 font-mono"
                           />
-                        </div>
-                        <div>
-                          <label className="block font-semibold text-slate-700 mb-1">
-                            Posición final calculada (TXT)
-                          </label>
-                          <input
-                            type="number"
-                            disabled
-                            value={
-                              (selectedField.startPosition || 1) +
-                              Math.max(1, selectedField.length) -
-                              1
-                            }
-                            className="w-full border border-slate-200 bg-slate-100 rounded px-2.5 py-1.5 font-mono text-slate-600"
-                          />
-                        </div>
-                      </>
-                    )}
-
-                    {selectedOutputType.family === 'XML' && (
-                      <div className="sm:col-span-2 grid grid-cols-2 gap-2">
-                        <div>
-                          <label className="block font-semibold text-slate-700 mb-1">
-                            Tipo de nodo XML
-                          </label>
-                          <select
-                            disabled={isImmutable}
-                            value={selectedField.xmlNodeKind || 'Elemento'}
-                            onChange={(e) =>
-                              handleUpdateField(selectedField.id, {
-                                xmlNodeKind: e.target.value as 'Elemento' | 'Atributo',
-                              })
-                            }
-                            className="w-full border border-slate-300 rounded px-2.5 py-1.5 bg-white"
-                          >
-                            <option value="Elemento">Elemento hijo (&lt;campo&gt;)</option>
-                            <option value="Atributo">Atributo en &lt;Registro&gt; (@campo)</option>
-                          </select>
-                        </div>
-                        <div>
-                          <label className="block font-semibold text-slate-700 mb-1">
-                            Sección / Nivel jerárquico
-                          </label>
-                          <select
-                            disabled={isImmutable}
-                            value={selectedField.recordSection}
-                            onChange={(e) =>
-                              handleUpdateField(selectedField.id, {
-                                recordSection: e.target.value as StructureField['recordSection'],
-                              })
-                            }
-                            className="w-full border border-slate-300 rounded px-2.5 py-1.5 bg-white"
-                          >
-                            <option value="Detalle">Detalle (&lt;DetalleRegistros&gt;)</option>
-                            <option value="Cabecera">Cabecera (&lt;Encabezado&gt;)</option>
-                            <option value="Nodo raíz / Hecho">Nodo raíz / Hecho</option>
-                          </select>
-                        </div>
+                        )}
                       </div>
-                    )}
 
-                    <div className="sm:col-span-2 pt-1 flex flex-wrap items-center justify-between gap-2">
-                      <label className="inline-flex items-center gap-2 cursor-pointer font-semibold text-slate-800">
+                      <div>
+                        <label className="block font-semibold text-slate-700 mb-1">
+                          Valor por defecto (si vacío)
+                          <HelpTooltip
+                            title="Valor predeterminado"
+                            description="Se utiliza únicamente cuando el dato de origen viene vacío y el campo admite nulos o tiene política de valor predeterminado. Los campos obligatorios no nulos nunca se rellenan silenciosamente."
+                          />
+                        </label>
                         <input
-                          type="checkbox"
+                          type="text"
                           disabled={isImmutable}
-                          checked={selectedField.required}
+                          placeholder="Opcional"
+                          value={selectedField.defaultValue || ''}
                           onChange={(e) =>
                             handleUpdateField(selectedField.id, {
-                              required: e.target.checked,
-                              nullable: !e.target.checked,
+                              defaultValue: e.target.value,
                             })
                           }
+                          className="w-full border border-slate-300 rounded px-2.5 py-1.5 font-mono"
                         />
-                        <span>Campo obligatorio en el archivo de salida</span>
-                      </label>
-                      <span className="text-[11px] text-slate-500">
-                        Sustento: <strong>{selectedField.evidenceState}</strong>
-                      </span>
+                      </div>
+
+                      <div>
+                        <label className="block font-semibold text-slate-700 mb-1">
+                          Alineación (Relleno)
+                        </label>
+                        <select
+                          disabled={isImmutable}
+                          value={selectedField.alignment}
+                          onChange={(e) =>
+                            handleUpdateField(selectedField.id, {
+                              alignment: e.target.value as 'Izquierda' | 'Derecha',
+                            })
+                          }
+                          className="w-full border border-slate-300 rounded px-2.5 py-1.5 bg-white"
+                        >
+                          <option value="Izquierda">Izquierda (rellena a la derecha)</option>
+                          <option value="Derecha">Derecha (rellena a la izquierda)</option>
+                        </select>
+                      </div>
+
+                      <div>
+                        <label className="block font-semibold text-slate-700 mb-1">
+                          Carácter de relleno (Padding)
+                          <HelpTooltip
+                            title="Carácter de relleno"
+                            description="Completa la longitud del campo con ceros ('0') o espacios (' ') cuando el valor es más corto que la longitud declarada (ej. '123' con relleno '0' a la derecha y longitud 6 produce '000123')."
+                          />
+                        </label>
+                        <select
+                          disabled={isImmutable}
+                          value={selectedField.paddingChar}
+                          onChange={(e) =>
+                            handleUpdateField(selectedField.id, {
+                              paddingChar: e.target.value as ' ' | '0' | 'Ninguno',
+                            })
+                          }
+                          className="w-full border border-slate-300 rounded px-2.5 py-1.5 bg-white"
+                        >
+                          <option value="Ninguno">Sin relleno</option>
+                          <option value=" ">Espacios (&apos; &apos;)</option>
+                          <option value="0">Ceros (&apos;0&apos;)</option>
+                        </select>
+                      </div>
+
+                      {selectedOutputType.family === 'TXT' && (
+                        <>
+                          <div>
+                            <label className="block font-semibold text-slate-700 mb-1">
+                              Posición inicial (TXT)
+                            </label>
+                            <input
+                              type="number"
+                              disabled={isImmutable}
+                              value={selectedField.startPosition || 1}
+                              onChange={(e) =>
+                                handleUpdateField(selectedField.id, {
+                                  startPosition: Number(e.target.value) || 1,
+                                })
+                              }
+                              className="w-full border border-slate-300 rounded px-2.5 py-1.5 font-mono"
+                            />
+                          </div>
+                          <div>
+                            <label className="block font-semibold text-slate-700 mb-1">
+                              Posición final calculada (TXT)
+                            </label>
+                            <input
+                              type="number"
+                              disabled
+                              value={
+                                (selectedField.startPosition || 1) +
+                                Math.max(1, selectedField.length) -
+                                1
+                              }
+                              className="w-full border border-slate-200 bg-slate-100 rounded px-2.5 py-1.5 font-mono text-slate-600"
+                            />
+                          </div>
+                        </>
+                      )}
+
+                      {selectedOutputType.family === 'XML' && (
+                        <div className="sm:col-span-2 grid grid-cols-2 gap-2">
+                          <div>
+                            <label className="block font-semibold text-slate-700 mb-1">
+                              Tipo de nodo XML
+                            </label>
+                            <select
+                              disabled={isImmutable}
+                              value={selectedField.xmlNodeKind || 'Elemento'}
+                              onChange={(e) =>
+                                handleUpdateField(selectedField.id, {
+                                  xmlNodeKind: e.target.value as 'Elemento' | 'Atributo',
+                                })
+                              }
+                              className="w-full border border-slate-300 rounded px-2.5 py-1.5 bg-white"
+                            >
+                              <option value="Elemento">Elemento hijo (&lt;campo&gt;)</option>
+                              <option value="Atributo">Atributo en &lt;Registro&gt; (@campo)</option>
+                            </select>
+                          </div>
+                          <div>
+                            <label className="block font-semibold text-slate-700 mb-1">
+                              Sección / Nivel jerárquico
+                            </label>
+                            <select
+                              disabled={isImmutable}
+                              value={selectedField.recordSection}
+                              onChange={(e) =>
+                                handleUpdateField(selectedField.id, {
+                                  recordSection: e.target.value as StructureField['recordSection'],
+                                })
+                              }
+                              className="w-full border border-slate-300 rounded px-2.5 py-1.5 bg-white"
+                            >
+                              <option value="Detalle">Detalle (&lt;DetalleRegistros&gt;)</option>
+                              <option value="Cabecera">Cabecera (&lt;Encabezado&gt;)</option>
+                              <option value="Nodo raíz / Hecho">Nodo raíz / Hecho</option>
+                            </select>
+                          </div>
+                        </div>
+                      )}
+
+                      <div className="sm:col-span-2 pt-1 flex flex-wrap items-center justify-between gap-2">
+                        <label className="inline-flex items-center gap-2 cursor-pointer font-semibold text-slate-800">
+                          <input
+                            type="checkbox"
+                            disabled={isImmutable}
+                            checked={selectedField.required}
+                            onChange={(e) =>
+                              handleUpdateField(selectedField.id, {
+                                required: e.target.checked,
+                                nullable: !e.target.checked,
+                              })
+                            }
+                          />
+                          <span>Campo obligatorio en el archivo de salida</span>
+                        </label>
+                        <span className="text-[11px] text-slate-500">
+                          Sustento: <strong>{selectedField.evidenceState}</strong>
+                        </span>
+                      </div>
                     </div>
-                  </div>
                 </>
               ) : (
                 <div className="text-xs text-slate-500 py-8 text-center">
@@ -3913,7 +4011,7 @@ export const VisualOutputBuilderView: React.FC = () => {
             </div>
           </div>
 
-          {/* Right: Package Files Composition (Editable & Duplicate-Safe) */}
+          {/* Right: Package Files Composition */}
           <div className="lg:col-span-5 bg-white border border-slate-200 rounded-md p-5 space-y-3 text-xs">
             <div className="flex items-center justify-between border-b border-slate-200 pb-2.5">
               <div>
@@ -3961,121 +4059,121 @@ export const VisualOutputBuilderView: React.FC = () => {
             </div>
 
             <div className="space-y-2.5">
-              {draft.composition.packageMembers.map((m, idx) => {
-                const isPrincipal = m.role === 'Principal';
-                const resolvedMemberName = isPrincipal
-                  ? compiledResult.fileName
-                  : resolveDynamicFileName(m.fileNamePattern, {
-                      ...fileNameContext,
-                      consecutivo: String(idx + 1).padStart(2, '0'),
-                    });
+                {draft.composition.packageMembers.map((m, idx) => {
+                  const isPrincipal = m.role === 'Principal';
+                  const resolvedMemberName = isPrincipal
+                    ? compiledResult.fileName
+                    : resolveDynamicFileName(m.fileNamePattern, {
+                        ...fileNameContext,
+                        consecutivo: String(idx + 1).padStart(2, '0'),
+                      });
 
-                return (
-                  <div
-                    key={m.id}
-                    className={`p-3 rounded border space-y-2 ${
-                      isPrincipal
-                        ? 'border-blue-200 bg-blue-50/40'
-                        : 'border-slate-200 bg-slate-50'
-                    }`}
-                  >
-                    <div className="flex items-center justify-between gap-2">
-                      {isPrincipal ? (
-                        <span className="font-bold text-[#1E4E8C]">
-                          1. Rol: Principal (Archivo de la salida)
-                        </span>
-                      ) : (
-                        <select
-                          aria-label={`Rol del archivo ${idx + 1}`}
-                          disabled={isImmutable}
-                          value={m.role}
-                          onChange={(e) =>
-                            updateDraft((p) => ({
-                              ...p,
-                              composition: {
-                                ...p.composition,
-                                packageMembers: p.composition.packageMembers.map((item) =>
-                                  item.id === m.id
-                                    ? {
-                                        ...item,
-                                        role: e.target.value as PackageMemberRole['role'],
-                                      }
-                                    : item
-                                ),
-                              },
-                            }))
-                          }
-                          className="border border-slate-300 rounded px-2 py-0.5 bg-white font-bold text-slate-900"
-                        >
-                          <option value="Control / Resumen">Control / Resumen</option>
-                          <option value="Anexo">Anexo</option>
-                          <option value="Detalle">Detalle secundario</option>
-                          <option value="Evidencia interna">Evidencia interna</option>
-                        </select>
-                      )}
-
-                      <div className="flex items-center gap-1.5">
-                        <span className="px-2 py-0.5 rounded bg-slate-200 text-slate-800 font-mono text-[10px] font-bold">
-                          {m.cardinality}
-                        </span>
-                        {!isImmutable && !isPrincipal && (
-                          <button
-                            type="button"
-                            onClick={() =>
+                  return (
+                    <div
+                      key={m.id}
+                      className={`p-3 rounded border space-y-2 ${
+                        isPrincipal
+                          ? 'border-blue-200 bg-blue-50/40'
+                          : 'border-slate-200 bg-slate-50'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        {isPrincipal ? (
+                          <span className="font-bold text-[#1E4E8C]">
+                            1. Rol: Principal (Archivo de la salida)
+                          </span>
+                        ) : (
+                          <select
+                            aria-label={`Rol del archivo ${idx + 1}`}
+                            disabled={isImmutable}
+                            value={m.role}
+                            onChange={(e) =>
                               updateDraft((p) => ({
                                 ...p,
                                 composition: {
                                   ...p.composition,
-                                  packageMembers: p.composition.packageMembers.filter(
-                                    (item) => item.id !== m.id
+                                  packageMembers: p.composition.packageMembers.map((item) =>
+                                    item.id === m.id
+                                      ? {
+                                          ...item,
+                                          role: e.target.value as PackageMemberRole['role'],
+                                        }
+                                      : item
                                   ),
                                 },
                               }))
                             }
-                            className="p-1 rounded text-rose-700 hover:bg-rose-100 cursor-pointer"
-                            title="Eliminar este archivo del paquete"
+                            className="border border-slate-300 rounded px-2 py-0.5 bg-white font-bold text-slate-900"
                           >
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </button>
+                            <option value="Control / Resumen">Control / Resumen</option>
+                            <option value="Anexo">Anexo</option>
+                            <option value="Detalle">Detalle secundario</option>
+                            <option value="Evidencia interna">Evidencia interna</option>
+                          </select>
                         )}
-                      </div>
-                    </div>
 
-                    {isPrincipal ? (
-                      <div className="font-mono text-[11px] text-[#1E4E8C] font-semibold">
-                        Nombre resuelto: {resolvedMemberName}
-                      </div>
-                    ) : (
-                      <div className="space-y-1">
-                        <input
-                          type="text"
-                          aria-label={`Patrón de nombre del miembro ${idx + 1}`}
-                          disabled={isImmutable}
-                          value={m.fileNamePattern}
-                          onChange={(e) =>
-                            updateDraft((p) => ({
-                              ...p,
-                              composition: {
-                                ...p.composition,
-                                packageMembers: p.composition.packageMembers.map((item) =>
-                                  item.id === m.id
-                                    ? { ...item, fileNamePattern: e.target.value }
-                                    : item
-                                ),
-                              },
-                            }))
-                          }
-                          className="w-full border border-slate-300 rounded px-2 py-1 font-mono text-[11px] bg-white"
-                        />
-                        <div className="font-mono text-[10px] text-slate-600">
-                          Resuelto: {resolvedMemberName}
+                        <div className="flex items-center gap-1.5">
+                          <span className="px-2 py-0.5 rounded bg-slate-200 text-slate-800 font-mono text-[10px] font-bold">
+                            {m.cardinality}
+                          </span>
+                          {!isImmutable && !isPrincipal && (
+                            <button
+                              type="button"
+                              onClick={() =>
+                                updateDraft((p) => ({
+                                  ...p,
+                                  composition: {
+                                    ...p.composition,
+                                    packageMembers: p.composition.packageMembers.filter(
+                                      (item) => item.id !== m.id
+                                    ),
+                                  },
+                                }))
+                              }
+                              className="p-1 rounded text-rose-700 hover:bg-rose-100 cursor-pointer"
+                              title="Eliminar este archivo del paquete"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          )}
                         </div>
                       </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
+
+                      {isPrincipal ? (
+                        <div className="font-mono text-[11px] text-[#1E4E8C] font-semibold">
+                          Nombre resuelto: {resolvedMemberName}
+                        </div>
+                      ) : (
+                        <div className="space-y-1">
+                          <input
+                            type="text"
+                            aria-label={`Patrón de nombre del miembro ${idx + 1}`}
+                            disabled={isImmutable}
+                            value={m.fileNamePattern}
+                            onChange={(e) =>
+                              updateDraft((p) => ({
+                                ...p,
+                                composition: {
+                                  ...p.composition,
+                                  packageMembers: p.composition.packageMembers.map((item) =>
+                                    item.id === m.id
+                                      ? { ...item, fileNamePattern: e.target.value }
+                                      : item
+                                  ),
+                                },
+                              }))
+                            }
+                            className="w-full border border-slate-300 rounded px-2 py-1 font-mono text-[11px] bg-white"
+                          />
+                          <div className="font-mono text-[10px] text-slate-600">
+                            Resuelto: {resolvedMemberName}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
           </div>
         </div>
       )}
@@ -5087,6 +5185,31 @@ export const VisualOutputBuilderView: React.FC = () => {
         onGoToStep={(s) => setBuilderStep(s)}
         notify={notify}
       />
+
+      {/* MODAL DE IMPORTACIÓN DE ANEXO NORMATIVO CON TOTALiA® */}
+      {showAnnexImportModal && (
+        <div
+          className="fixed inset-0 z-50 bg-slate-900/55 backdrop-blur-[2px] flex items-center justify-center p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Importar anexo normativo con TOTALiA"
+        >
+          <div className="max-w-4xl w-full max-h-[90vh] overflow-y-auto rounded-lg shadow-2xl">
+            <NormativeAnnexImportPanel
+              outputTypes={outputTypes}
+              regulatoryFormats={regulatoryFormats}
+              existingCodes={configuredOutputs.map((o) => o.code)}
+              responsibleUser="Arquitecto Normativo"
+              defaultContractId={draft.dataContractId}
+              defaultChannelId={draft.defaultDeliveryChannelId}
+              fallbackJurisdiction={draft.jurisdiction}
+              fallbackRegulator={draft.regulator}
+              onApplyInterpretation={handleApplyAnnexToDraft}
+              onClose={() => setShowAnnexImportModal(false)}
+            />
+          </div>
+        </div>
+      )}
     </div>
   );
 };

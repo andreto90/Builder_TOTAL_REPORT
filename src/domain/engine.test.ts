@@ -24,7 +24,30 @@ import {
   evaluateFormatDependencies,
   evaluateFormatEditImpact,
   computeOrganismSummaries,
+  buildAutoOutputCode,
+  buildAutoTechnicalName,
+  getSmartFieldDefaults,
+  buildSmartStructureField,
+  buildQuickOutputDefaults,
+  recalculateStructureFieldsForFamily,
+  NO_REGULATOR_LABEL,
+  getOrganismsForJurisdiction,
+  formatMatchesOrganism,
+  getCompatibleTransmissionsForFormat,
+  buildWizardAssociationRecords,
 } from './engine';
+import {
+  AMERICAS_AND_EUROPE_COUNTRIES,
+  resolveRegulatorsForCountry,
+  searchCountryEntries,
+  searchRegulatorOptions,
+} from './jurisdictionsCatalog';
+import {
+  NormativeAnnexInterpretation,
+  buildConfiguredOutputFromInterpretation,
+  resolveCanonicalCountry,
+  validateAnnexUploadFile,
+} from './annexInterpreterTypes';
 import {
   evaluateCatalogImportImpact,
   generateSample152RowsCatalogExcelBuffer,
@@ -1383,6 +1406,621 @@ test('validateAssociationContext blocks activating operational associations on i
   assert.equal(resInactive.canActivate, false);
   assert.equal(resInactive.blockers.some((b) => b.includes('Formato desactivado')), true);
 });
+
+test('buildAutoOutputCode and buildAutoTechnicalName generate clean collision-free identifiers', () => {
+  const code1 = buildAutoOutputCode('Reporte Mensual de Cartera y Garantías', []);
+  assert.equal(code1, 'SAL-REPORTE-MENSUAL-CA');
+
+  const code2 = buildAutoOutputCode('Reporte Mensual de Cartera y Garantías', [code1]);
+  assert.equal(code2, `${code1}-02`);
+
+  const tech1 = buildAutoTechnicalName('Número de Obligación / Crédito', []);
+  assert.equal(tech1, 'numero_de_obligacion_credito');
+
+  const tech2 = buildAutoTechnicalName('Número de Obligación / Crédito', [tech1]);
+  assert.equal(tech2, 'numero_de_obligacion_credito_2');
+
+  const numericStart = buildAutoTechnicalName('1er Saldo Capital', []);
+  assert.equal(numericStart, 'campo_1er_saldo_capital');
+});
+
+test('buildSmartStructureField auto-fills technical defaults and sequential TXT startPosition', () => {
+  const existing = [
+    buildSmartStructureField({
+      label: 'Fecha de Corte',
+      dataType: 'Fecha',
+      family: 'TXT',
+      existingFields: [],
+      sourceContractId: 'DC-CARTERA-01',
+    }),
+  ];
+  assert.equal(existing[0].technicalName, 'fecha_de_corte');
+  assert.equal(existing[0].length, 10);
+  assert.equal(existing[0].formatMask, 'dd-MM-yyyy');
+  assert.equal(existing[0].startPosition, 1);
+
+  const second = buildSmartStructureField({
+    label: 'Saldo Capital',
+    dataType: 'Decimal',
+    family: 'TXT',
+    existingFields: existing,
+    sourceContractId: 'DC-CARTERA-01',
+  });
+  assert.equal(second.technicalName, 'saldo_capital');
+  assert.equal(second.length, 18);
+  assert.equal(second.precision, 18);
+  assert.equal(second.scale, 2);
+  assert.equal(second.alignment, 'Derecha');
+  assert.equal(second.paddingChar, '0');
+  assert.equal(second.startPosition, 11);
+  assert.equal(second.mapping.mappingStatus, 'Sin asignar');
+});
+
+test('buildQuickOutputDefaults populates complete valid draft from minimal inputs while supporting overrides', () => {
+  const csvType = INITIAL_OUTPUT_TYPES.find((t) => t.family === 'CSV')!;
+  const txtType = INITIAL_OUTPUT_TYPES.find((t) => t.family === 'TXT')!;
+
+  const quickCsv = buildQuickOutputDefaults({
+    name: 'Anexo Liquidez Diaria',
+    outputType: csvType,
+    existingCodes: ['SAL-ANEXO-LIQUIDEZ-DIA'],
+    responsibleUser: 'Implementador técnico / regulatorio',
+  });
+
+  assert.equal(quickCsv.code, 'SAL-ANEXO-LIQUIDEZ-DIA-02');
+  assert.equal(quickCsv.status, 'Borrador');
+  assert.equal(quickCsv.version, '1.0');
+  assert.equal(quickCsv.composition.delimiter, ';');
+  assert.equal(quickCsv.composition.decimalSeparator, ',');
+  assert.equal(quickCsv.composition.extension, 'csv');
+  assert.equal(quickCsv.fields.length, 1);
+
+  const quickTxtFive = buildQuickOutputDefaults({
+    name: 'Plano Operaciones',
+    outputType: txtType,
+    starterMode: 'five',
+    overrideCode: 'CUSTOM-TXT-99',
+    overrideVersion: '2.0',
+    regulator: 'DIAN',
+    jurisdiction: 'Colombia',
+    responsibleUser: 'Implementador técnico / regulatorio',
+  });
+
+  assert.equal(quickTxtFive.code, 'CUSTOM-TXT-99');
+  assert.equal(quickTxtFive.version, '2.0');
+  assert.equal(quickTxtFive.regulator, 'DIAN');
+  assert.equal(quickTxtFive.composition.delimiter, 'Ancho fijo');
+  assert.equal(quickTxtFive.composition.includeFooter, true);
+  assert.equal(quickTxtFive.fields.length, 5);
+  assert.equal(quickTxtFive.fields[4].startPosition, 83);
+  assert.equal(getSmartFieldDefaults('Entero', 'CSV').paddingChar, 'Ninguno');
+});
+
+test('recalculateStructureFieldsForFamily and buildQuickOutputDefaults preserve custom modal fields and TXT positions', () => {
+  const txtType = INITIAL_OUTPUT_TYPES.find((t) => t.family === 'TXT')!;
+  const f1 = buildSmartStructureField({
+    label: 'Código Entidad',
+    dataType: 'Texto',
+    family: 'CSV',
+    existingFields: [],
+    sourceContractId: 'DC-CARTERA-01',
+    customLength: 8,
+  });
+  const f2 = buildSmartStructureField({
+    label: 'Saldo Mora',
+    dataType: 'Decimal',
+    family: 'CSV',
+    existingFields: [f1],
+    sourceContractId: 'DC-CARTERA-01',
+    customLength: 14,
+  });
+
+  const normalizedTxt = recalculateStructureFieldsForFamily([f2, f1], 'TXT');
+  assert.equal(normalizedTxt[0].order, 1);
+  assert.equal(normalizedTxt[0].technicalName, 'saldo_mora');
+  assert.equal(normalizedTxt[0].startPosition, 1);
+  assert.equal(normalizedTxt[0].paddingChar, '0');
+  assert.equal(normalizedTxt[1].order, 2);
+  assert.equal(normalizedTxt[1].startPosition, 15);
+  assert.equal(normalizedTxt[1].paddingChar, ' ');
+
+  const draftFromModal = buildQuickOutputDefaults({
+    name: 'Informe Mora Trimestral',
+    outputType: txtType,
+    customFields: [f1, f2],
+    regulator: 'SFC / Ente Supervisor',
+    jurisdiction: 'Colombia',
+    responsibleUser: 'Implementador técnico / regulatorio',
+  });
+
+  assert.equal(draftFromModal.fields.length, 2);
+  assert.equal(draftFromModal.fields[0].startPosition, 1);
+  assert.equal(draftFromModal.fields[1].startPosition, 9);
+  assert.equal(draftFromModal.fields[1].paddingChar, '0');
+});
+
+test('getOrganismsForJurisdiction filters receiving organisms per country and includes all on Multirregulador', () => {
+  const coOrgs = getOrganismsForJurisdiction(INITIAL_RECEIVING_ORGANISMS, 'Colombia');
+  const peOrgs = getOrganismsForJurisdiction(INITIAL_RECEIVING_ORGANISMS, 'Perú');
+  const multiOrgs = getOrganismsForJurisdiction(INITIAL_RECEIVING_ORGANISMS, 'Multirregulador');
+
+  assert.equal(coOrgs.length, 7);
+  assert.equal(coOrgs.every((o) => o.country === 'Colombia'), true);
+  assert.equal(coOrgs.some((o) => o.shortName === 'DIAN'), true);
+
+  assert.equal(peOrgs.length, 2);
+  assert.equal(peOrgs.every((o) => o.country === 'Perú'), true);
+  assert.equal(peOrgs.some((o) => o.shortName === 'SBS Perú'), true);
+
+  assert.equal(multiOrgs.length, INITIAL_RECEIVING_ORGANISMS.length);
+});
+
+test('formatMatchesOrganism resolves full names, short names, and custom no-regulator outputs cleanly', () => {
+  const sfcFmt = INITIAL_REGULATORY_FORMATS.find((f) => f.regulator.includes('Superintendencia Financiera'))!;
+  const dianFmt = INITIAL_REGULATORY_FORMATS.find((f) => f.regulator === 'DIAN')!;
+  const sbsFmt = INITIAL_REGULATORY_FORMATS.find((f) => f.regulator === 'SBS Perú')!;
+
+  assert.equal(formatMatchesOrganism(sfcFmt, 'SFC - Superintendencia Financiera de Colombia', INITIAL_RECEIVING_ORGANISMS), true);
+  assert.equal(formatMatchesOrganism(sfcFmt, 'SFC', INITIAL_RECEIVING_ORGANISMS), true);
+  assert.equal(formatMatchesOrganism(dianFmt, 'SFC', INITIAL_RECEIVING_ORGANISMS), false);
+  assert.equal(formatMatchesOrganism(dianFmt, 'DIAN', INITIAL_RECEIVING_ORGANISMS), true);
+  assert.equal(formatMatchesOrganism(sbsFmt, 'SBS Perú', INITIAL_RECEIVING_ORGANISMS), true);
+  assert.equal(formatMatchesOrganism(dianFmt, NO_REGULATOR_LABEL, INITIAL_RECEIVING_ORGANISMS), true);
+});
+
+test('buildWizardAssociationRecords supports custom outputs (0 formats), multiple formats, and respects canActivate rules', () => {
+  const xmlType = INITIAL_OUTPUT_TYPES.find((t) => t.family === 'XML')!;
+  const csvType = INITIAL_OUTPUT_TYPES.find((t) => t.family === 'CSV')!;
+
+  const customOut = buildQuickOutputDefaults({
+    name: 'Extracto Gerencial Interno',
+    outputType: csvType,
+    regulator: NO_REGULATOR_LABEL,
+    jurisdiction: 'Colombia',
+    responsibleUser: 'Implementador técnico / regulatorio',
+  });
+  assert.equal(customOut.regulator, NO_REGULATOR_LABEL);
+
+  const emptyAssoc = buildWizardAssociationRecords({
+    selections: [],
+    configuredOutput: customOut,
+    outputType: csvType,
+    formats: INITIAL_REGULATORY_FORMATS,
+    transmissionTypes: INITIAL_TRANSMISSION_TYPES,
+    existingAssociations: INITIAL_ASSOCIATIONS,
+    entityScope: 'Banco Demo S.A.',
+    environment: 'QA',
+    deliveryChannelId: 'CHAN-MANUAL-01',
+    activeUserRole: 'Implementador técnico / regulatorio',
+  });
+  assert.equal(emptyAssoc.records.length, 0);
+  assert.equal(emptyAssoc.skipped.length, 0);
+
+  // Pick 2 Colombia DIAN formats + 1 future Peru format to test multi-association and safety downgrade
+  const dianFormats = INITIAL_REGULATORY_FORMATS.filter((f) => f.regulator === 'DIAN').slice(0, 2);
+  assert.equal(dianFormats.length, 2);
+
+  const multiOut = buildQuickOutputDefaults({
+    name: 'Exógena XML Unificada',
+    outputType: xmlType,
+    regulator: 'DIAN',
+    jurisdiction: 'Colombia',
+    responsibleUser: 'Implementador técnico / regulatorio',
+  });
+
+  const multiResult = buildWizardAssociationRecords({
+    selections: dianFormats.map((f) => ({
+      formatId: f.id,
+      transmissionTypeId:
+        getCompatibleTransmissionsForFormat(f, INITIAL_TRANSMISSION_TYPES, 'XML')[0]?.id ||
+        'TX-ORDINARIO',
+      modality: 'Inicial',
+      proposedStatus: 'Borrador',
+    })),
+    configuredOutput: multiOut,
+    outputType: xmlType,
+    formats: INITIAL_REGULATORY_FORMATS,
+    transmissionTypes: INITIAL_TRANSMISSION_TYPES,
+    existingAssociations: INITIAL_ASSOCIATIONS,
+    entityScope: 'Banco Demo S.A.',
+    environment: 'QA',
+    deliveryChannelId: 'CHAN-MANUAL-01',
+    activeUserRole: 'Implementador técnico / regulatorio',
+  });
+
+  assert.equal(multiResult.records.length, 2);
+  assert.notEqual(multiResult.records[0].code, multiResult.records[1].code);
+  assert.equal(multiResult.records[0].configuredOutputId, multiOut.id);
+  assert.equal(multiResult.records[1].configuredOutputId, multiOut.id);
+
+  // Future validity format requested as 'Activa' must safely downgrade to 'Instalada sin activar'
+  const futurePeFormat = INITIAL_REGULATORY_FORMATS.find((f) => f.id === 'FMT-PE-510-FUTURO')!;
+  const peOut = buildQuickOutputDefaults({
+    name: 'Anexo Futuro SBS',
+    outputType: csvType,
+    regulator: 'SBS Perú',
+    jurisdiction: 'Perú',
+    responsibleUser: 'Implementador técnico / regulatorio',
+  });
+  const futureResult = buildWizardAssociationRecords({
+    selections: [
+      {
+        formatId: futurePeFormat.id,
+        transmissionTypeId: 'TX-ORDINARIO',
+        modality: 'Inicial',
+        proposedStatus: 'Activa',
+      },
+    ],
+    configuredOutput: peOut,
+    outputType: csvType,
+    formats: INITIAL_REGULATORY_FORMATS,
+    transmissionTypes: INITIAL_TRANSMISSION_TYPES,
+    existingAssociations: INITIAL_ASSOCIATIONS,
+    entityScope: 'Banco Demo S.A.',
+    environment: 'QA',
+    deliveryChannelId: 'CHAN-MANUAL-01',
+    activeUserRole: 'Implementador técnico / regulatorio',
+  });
+  assert.equal(futureResult.records.length, 1);
+  assert.equal(futureResult.records[0].status, 'Instalada sin activar');
+});
+
+test('AMERICAS_AND_EUROPE_COUNTRIES covers America and Europe with search and regulator resolution', () => {
+  const america = AMERICAS_AND_EUROPE_COUNTRIES.filter((c) => c.region === 'América');
+  const europe = AMERICAS_AND_EUROPE_COUNTRIES.filter((c) => c.region === 'Europa');
+  assert.equal(america.length >= 25, true);
+  assert.equal(europe.length >= 30, true);
+
+  // Accent-insensitive country & acronym search
+  const spainSearch = searchCountryEntries('espana');
+  assert.equal(spainSearch.some((c) => c.country === 'España'), true);
+
+  const bafinCountry = searchCountryEntries('BaFin', 'Europa');
+  assert.equal(bafinCountry.some((c) => c.country === 'Alemania'), true);
+
+  const cnbvCountry = searchCountryEntries('cnbv', 'América');
+  assert.equal(cnbvCountry.some((c) => c.country === 'México'), true);
+
+  // Colombia merges context organisms without duplicating SFC / DIAN
+  const coRegs = resolveRegulatorsForCountry('Colombia', INITIAL_RECEIVING_ORGANISMS);
+  const dianMatches = coRegs.filter((r) => r.shortName === 'DIAN');
+  assert.equal(dianMatches.length, 1);
+  assert.equal(coRegs.some((r) => r.shortName === 'BanRep'), true);
+
+  // European country resolves its regulators and supports search by acronym or scope
+  const esRegs = resolveRegulatorsForCountry('España', INITIAL_RECEIVING_ORGANISMS);
+  assert.equal(esRegs.some((r) => r.shortName === 'BdE'), true);
+  assert.equal(esRegs.some((r) => r.shortName === 'CNMV'), true);
+  assert.equal(esRegs.some((r) => r.shortName === 'SEPBLAC'), true);
+
+  const filteredSepblac = searchRegulatorOptions(esRegs, 'blanqueo');
+  assert.equal(filteredSepblac.length, 1);
+  assert.equal(filteredSepblac[0].shortName, 'SEPBLAC');
+});
+
+test('INITIAL_REGULATORY_FORMATS provides real formats across all Americas and Europe countries and entities', () => {
+  // Every country in AMERICAS_AND_EUROPE_COUNTRIES must have at least 1 real format & entity type
+  for (const entry of AMERICAS_AND_EUROPE_COUNTRIES) {
+    const countryFormats = INITIAL_REGULATORY_FORMATS.filter(
+      (f) => (f.country || f.jurisdiction) === entry.country
+    );
+    assert.equal(
+      countryFormats.length >= 1,
+      true,
+      `Expected formats for ${entry.country}, got ${countryFormats.length}`
+    );
+    const countryEntityTypes = ENTITY_TYPES_CATALOG.filter(
+      (et) => et.country === entry.country
+    );
+    assert.equal(
+      countryEntityTypes.length >= 1,
+      true,
+      `Expected entity types for ${entry.country}`
+    );
+  }
+
+  // Every regulator in America must match at least 1 format
+  const americas = AMERICAS_AND_EUROPE_COUNTRIES.filter((c) => c.region === 'América');
+  for (const country of americas) {
+    const countryFormats = INITIAL_REGULATORY_FORMATS.filter(
+      (f) => (f.country || f.jurisdiction) === country.country
+    );
+    for (const reg of country.regulators) {
+      const matched = countryFormats.some((fmt) =>
+        formatMatchesOrganism(fmt, reg.name, INITIAL_RECEIVING_ORGANISMS)
+      );
+      assert.equal(
+        matched,
+        true,
+        `Expected at least 1 format for ${country.country} / ${reg.shortName} (${reg.name})`
+      );
+    }
+  }
+
+  // Verify well-known regional formats exist cleanly
+  const mxR04 = INITIAL_REGULATORY_FORMATS.find(
+    (f) => f.country === 'México' && (f.code || '').includes('R04')
+  );
+  assert.ok(mxR04, 'México must include CNBV Serie R04');
+
+  const br3040 = INITIAL_REGULATORY_FORMATS.find(
+    (f) => f.country === 'Brasil' && (f.code || '').includes('3040')
+  );
+  assert.ok(br3040, 'Brasil must include BCB CADOC 3040');
+
+  const usCall = INITIAL_REGULATORY_FORMATS.find(
+    (f) => f.country === 'Estados Unidos' && (f.code || '').includes('031')
+  );
+  assert.ok(usCall, 'Estados Unidos must include FFIEC 031/041');
+
+  const euCorep = INITIAL_REGULATORY_FORMATS.find(
+    (f) =>
+      f.country === 'Unión Europea (Supranacional)' &&
+      (f.code || '').includes('COREP')
+  );
+  assert.ok(euCorep, 'Unión Europea must include EBA COREP');
+});
+
+test('validateAnnexUploadFile accepts PDF, Word, Excel and Images and rejects invalid files', () => {
+  assert.equal(validateAnnexUploadFile('anexo_tecnico.pdf', 'application/pdf', 1024).ok, true);
+  assert.equal(
+    validateAnnexUploadFile(
+      'circular_cnbv.docx',
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      2048
+    ).kind,
+    'word_docx'
+  );
+  assert.equal(validateAnnexUploadFile('anexo_antiguo.doc', 'application/msword', 2048).kind, 'word_doc');
+  assert.equal(
+    validateAnnexUploadFile(
+      'layout_bcp.xlsx',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      4096
+    ).kind,
+    'excel'
+  );
+  assert.equal(validateAnnexUploadFile('especificacion.xls', '', 4096).kind, 'excel');
+  assert.equal(validateAnnexUploadFile('tabla_campos.png', 'image/png', 1500).kind, 'image');
+  assert.equal(validateAnnexUploadFile('captura.jpg', 'image/jpeg', 1500).kind, 'image');
+
+  assert.equal(validateAnnexUploadFile('vacio.pdf', 'application/pdf', 0).ok, false);
+  assert.equal(validateAnnexUploadFile('demasiado_grande.pdf', 'application/pdf', 20 * 1024 * 1024).ok, false);
+  assert.equal(validateAnnexUploadFile('script.exe', 'application/octet-stream', 500).ok, false);
+});
+
+test('buildConfiguredOutputFromInterpretation builds structured draft, preserves uninterpreted items and matches formats', () => {
+  assert.equal(resolveCanonicalCountry('Mexico'), 'México');
+  assert.equal(resolveCanonicalCountry('USA'), 'Estados Unidos');
+
+  const sampleInterpretation: NormativeAnnexInterpretation = {
+    sourceFileName: 'Circular_CNBV_R04_Cartera.xlsx',
+    sourceKind: 'excel',
+    summary: 'Anexo regulatorio CNBV Serie R04 C-0411 para reporte mensual de cartera.',
+    confidenceLevel: 'Alta',
+    detectedDocumentMeta: {
+      documentTitle: 'Anexo Técnico R04 Cartera de Crédito',
+      normativeReference: 'CUB Anexo 36 CNBV',
+      country: 'México',
+      regulatorShortOrName: 'CNBV',
+      formatCode: 'Serie R04 (C-0411)',
+      formatName: 'Desagregado de Cartera de Crédito Comercial',
+      periodicity: 'Mensual',
+      reportingModality: 'Periódico',
+      applicableEntityTypes: ['Instituciones de Banca Múltiple'],
+    },
+    suggestedOutputConfig: {
+      outputName: 'CNBV Serie R04 Cartera Comercial',
+      outputCode: 'MX-CNBV-R04',
+      description: 'Archivo plano separado por punto y coma conforme a anexo R04.',
+      recommendedFamily: 'CSV',
+      encoding: 'UTF-8',
+      fileNamePattern: '{entidad}_R04_{periodo}.csv',
+      delimiter: '|',
+      decimalSeparator: '.',
+      includeHeader: true,
+      includeFooter: false,
+      includeControlTotals: false,
+      emptyDatasetPolicy: 'Producir vacío válido',
+      xmlRootElement: '',
+      xmlNamespace: '',
+      hasHeaderRecord: true,
+      hasFooterControlRecord: false,
+    },
+    suggestedFields: [
+      {
+        technicalName: 'cve_institucion',
+        label: 'Clave de Institución',
+        description: 'Clave asignada por la CNBV a la entidad reportante',
+        recordSection: 'Detalle',
+        dataType: 'Texto',
+        length: 6,
+        formatMask: 'Alfanumérico',
+        paddingChar: '0',
+        alignment: 'Derecha',
+        required: true,
+        defaultValue: '',
+        evidenceNote: 'Hoja Layout R04 columna 1, longitud 6',
+      },
+      {
+        technicalName: 'saldo_insoluto',
+        label: 'Saldo Insoluto al Corte',
+        description: 'Importe de capital pendiente de cobro',
+        recordSection: 'Detalle',
+        dataType: 'Decimal',
+        length: 18,
+        precision: 18,
+        scale: 2,
+        formatMask: '0.00',
+        paddingChar: 'Ninguno',
+        alignment: 'Derecha',
+        required: true,
+        defaultValue: '',
+        evidenceNote: 'Inferido pendiente de confirmar si incluye intereses devengados',
+      },
+    ],
+    suggestedValidations: [
+      {
+        name: 'Saldo insoluto positivo',
+        layer: 'Datos del formato (DAQUE)',
+        targetFieldTechnicalName: 'saldo_insoluto',
+        conditionExpression: 'saldo_insoluto >= 0',
+        severity: 'Bloqueante',
+        diagnosticMessage: 'El saldo insoluto no puede ser negativo.',
+        evidenceNote: 'Regla 4.2 del anexo',
+      },
+    ],
+    uninterpretedItems: [
+      {
+        category: 'Transmisión y nomenclatura',
+        aspect: 'Certificado SITI y cifrado PGP',
+        reason: 'El libro Excel no especifica si la entrega requiere firma SITI v3 o empaquetado ZIP.',
+        recommendedAction: 'Confirmar en Paso 5 o con el equipo de cumplimiento regulatorio.',
+      },
+    ],
+  };
+
+  const result = buildConfiguredOutputFromInterpretation({
+    interpretation: sampleInterpretation,
+    outputTypes: INITIAL_OUTPUT_TYPES,
+    regulatoryFormats: INITIAL_REGULATORY_FORMATS,
+    existingCodes: ['DEMO-CE-01'],
+    responsibleUser: 'Implementador técnico / regulatorio',
+  });
+
+  assert.equal(result.matchedCountry, 'México');
+  assert.equal(result.draft.code, 'MX-CNBV-R04');
+  assert.equal(result.draft.composition.delimiter, '|');
+  assert.equal(result.draft.composition.decimalSeparator, '.');
+  assert.equal(result.draft.composition.fileNamePattern, '{entidad}_R04_{periodo}.csv');
+  assert.equal(result.draft.fields.length, 2);
+  assert.equal(result.draft.fields[0].evidenceState, 'Sustento explícito');
+  assert.equal(result.draft.fields[1].evidenceState, 'Requiere confirmación');
+  assert.equal(result.draft.validationRules.length, 1);
+  assert.equal(result.uninterpretedCount, 1);
+  assert.equal(result.matchedFormats.some((f) => f.country === 'México'), true);
+});
+
+test('Colombia catalog includes comprehensive real formats across all Colombian supervisory and tax organisms without code collisions', () => {
+  const coEntry = AMERICAS_AND_EUROPE_COUNTRIES.find((c) => c.country === 'Colombia')!;
+  assert.ok(coEntry && coEntry.regulators.length >= 15, 'Colombia must list all main regulatory organisms');
+
+  const coFormats = INITIAL_REGULATORY_FORMATS.filter(
+    (f) => (f.country || f.jurisdiction) === 'Colombia'
+  );
+  assert.equal(coFormats.length >= 75, true, `Expected >= 75 Colombia formats, got ${coFormats.length}`);
+
+  // No duplicate format IDs anywhere in INITIAL_REGULATORY_FORMATS
+  const seenIds = new Set<string>();
+  for (const fmt of INITIAL_REGULATORY_FORMATS) {
+    assert.equal(seenIds.has(fmt.id), false, `Duplicate format ID: ${fmt.id}`);
+    seenIds.add(fmt.id);
+  }
+
+  // No duplicate non-empty (regulator, code) within Colombia
+  const seenRegCode = new Set<string>();
+  for (const fmt of coFormats) {
+    const c = (fmt.code || '').trim();
+    if (!c) continue;
+    const key = `${fmt.regulator}::${c.toLowerCase()}`;
+    assert.equal(seenRegCode.has(key), false, `Duplicate Colombia format code in regulator: ${key}`);
+    seenRegCode.add(key);
+  }
+
+  // Verify key official Colombian formats across organisms
+  const hasCode = (regSubstr: string, codePart: string) =>
+    coFormats.some(
+      (f) =>
+        f.regulator.toLowerCase().includes(regSubstr.toLowerCase()) &&
+        (f.code || '').toLowerCase().includes(codePart.toLowerCase())
+    );
+
+  // SFC
+  assert.equal(hasCode('superintendencia financiera', 'cuif'), true);
+  assert.equal(hasCode('superintendencia financiera', '281'), true);
+  assert.equal(hasCode('superintendencia financiera', '351'), true);
+  assert.equal(hasCode('superintendencia financiera', '412'), true);
+  assert.equal(hasCode('superintendencia financiera', '413'), true);
+  assert.equal(hasCode('superintendencia financiera', '415'), true);
+  assert.equal(hasCode('superintendencia financiera', '443'), true);
+  assert.equal(hasCode('superintendencia financiera', '525'), true);
+  assert.equal(hasCode('superintendencia financiera', 'f.1000-141'), true);
+
+  // DIAN
+  for (const code of ['1001', '1008', '1009', '1011', '1012', '2276', '1019', '1020', '2218', '2430', '2687', '110', '300', '350', 'UBL-FE-2.1', 'NE-XML-1.0']) {
+    assert.equal(hasCode('dian', code), true, `Missing DIAN format ${code}`);
+  }
+
+  // UIAF SIREL Annexes 1..7 + Ausencia
+  for (const anexo of ['anexo-1-ros', 'anexo-2-rte', 'anexo-3', 'anexo-4', 'anexo-5', 'anexo-6', 'anexo-7', 'ausencia']) {
+    assert.equal(hasCode('uiaf', anexo), true, `Missing UIAF format ${anexo}`);
+  }
+
+  // Fogafín, Fogacoop, Supersolidaria, BanRep, Supersociedades, SHD, Supersalud, CGN, UGPP, Supertransporte, Coljuegos, BVC/AMV
+  assert.equal(hasCode('fogafín', 'fdi'), true);
+  assert.equal(hasCode('fogafín', 'prima-sd'), true);
+  assert.equal(hasCode('fogacoop', 'sidcore'), true);
+  assert.equal(hasCode('supersolidaria', 'forc'), true);
+  assert.equal(hasCode('supersolidaria', '9083'), true);
+  assert.equal(hasCode('banco de la república', 'form. 1'), true);
+  assert.equal(hasCode('banco de la república', 'form. 6 / 15'), true);
+  assert.equal(hasCode('supersociedades - superintendencia', 'inf-01'), true);
+  assert.equal(hasCode('supersociedades - superintendencia', 'inf-75'), true);
+  assert.equal(hasCode('bogotá / shd', 'pido-ing'), true);
+  assert.equal(hasCode('supersalud', 'ft001'), true);
+  assert.equal(hasCode('cgn', 'cgn2015_001'), true);
+  assert.equal(hasCode('ugpp', 'pila-2388'), true);
+  assert.equal(hasCode('supertransporte', 'vigia-eeff'), true);
+  assert.equal(hasCode('coljuegos', 'colj-derechos'), true);
+  assert.equal(hasCode('bvc / amv', 'rnve'), true);
+
+  // Verify computeOrganismSummaries aggregates accurately across expanded Colombia organisms
+  const mergedCoOrganisms = [
+    ...INITIAL_RECEIVING_ORGANISMS.filter((o) => o.country === 'Colombia'),
+    ...coEntry.regulators
+      .filter(
+        (r) =>
+          !INITIAL_RECEIVING_ORGANISMS.some(
+            (o) =>
+              o.country === 'Colombia' &&
+              (o.name.toLowerCase() === r.name.toLowerCase() ||
+                o.shortName.toLowerCase() === r.shortName.toLowerCase())
+          )
+      )
+      .map((r) => ({
+        id: r.id,
+        code: r.shortName,
+        name: r.name,
+        shortName: `${r.shortName} — ${r.name}`,
+        country: 'Colombia',
+        description: r.scope,
+        officialUrl: '',
+        referenceUrls: [],
+        consultationDate: '2026-11-13',
+        isSystemDefault: true,
+      })),
+  ];
+
+  const summaries = computeOrganismSummaries({
+    organisms: mergedCoOrganisms,
+    formats: INITIAL_REGULATORY_FORMATS,
+    associations: INITIAL_ASSOCIATIONS,
+    countryFilter: 'Colombia',
+  });
+
+  for (const item of summaries) {
+    assert.equal(
+      item.totalFormats >= 1,
+      true,
+      `Organism ${item.organism.name} should have >= 1 format, got ${item.totalFormats}`
+    );
+  }
+});
+
+
+
+
+
 
 
 

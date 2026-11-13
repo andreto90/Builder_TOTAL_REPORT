@@ -280,7 +280,7 @@ export interface ConfiguredOutput {
   code: string;
   name: string;
   purpose: string;
-  jurisdiction: 'Colombia' | 'Perú' | 'Multirregulador';
+  jurisdiction: string;
   regulator: string;
   outputTypeId: string;
   description: string;
@@ -308,6 +308,10 @@ export interface ConfiguredOutput {
     emptyDatasetPolicy: EmptyDatasetPolicy;
     packageMembers: PackageMemberRole[];
   };
+  csvParamsOverride?: Partial<CsvParameters>;
+  txtParamsOverride?: Partial<TxtParameters>;
+  xmlParamsOverride?: Partial<XmlParameters>;
+  pdfParamsOverride?: Partial<PdfParameters>;
   // Etapa 3 & 4: Estructura y Mapeo
   dataContractId: string;
   sourceCatalogEntryId?: string;
@@ -423,7 +427,7 @@ export interface DataContract {
     | 'TÓTAL REPORT® — Núcleo de Preparación'
     | 'Fuente Externa Registrada por el Cliente';
   originRoute?: 'Formato generado por TÓTAL REPORT®' | 'Fuente proporcionada por el cliente';
-  jurisdiction?: 'Colombia' | 'Perú' | 'Multirregulador';
+  jurisdiction?: string;
   regulatorOrReceiver?: string;
   periodicity?: string;
   structureAvailability?: 'Estructura disponible' | 'Formato registrado; estructura pendiente';
@@ -481,7 +485,7 @@ export interface EntityTypeDefinition {
   id: string;
   code: string;
   name: string;
-  country: 'Colombia' | 'Perú';
+  country: string;
   description: string;
   regulatorMain: string;
 }
@@ -491,7 +495,7 @@ export interface ReceivingOrganismDefinition {
   code: string;
   name: string;
   shortName: string;
-  country: 'Colombia' | 'Perú';
+  country: string;
   description: string;
   officialUrl: string;
   referenceUrls: string[];
@@ -527,9 +531,9 @@ export interface RegulatoryFormat {
   code: string; // Código oficial (puede ser vacío si el reporte se identifica por nombre o anexo)
   internalCode?: string; // Identificador interno estable separado del código oficial
   name: string;
-  jurisdiction: 'Colombia' | 'Perú';
-  country?: 'Colombia' | 'Perú';
-  regulator: string; // Organismo receptor (ej. SFC, DIAN, Fogafín, UIAF, SBS Perú)
+  jurisdiction: string;
+  country?: string;
+  regulator: string; // Organismo receptor (ej. SFC, DIAN, Fogafín, UIAF, SBS Perú, CNBV, BCB, EBA)
   issuingOrganism?: string; // Organismo emisor de la instrucción técnica cuando difiere del receptor (ej. SFC para anexos SIREL recibidos por UIAF)
   obligation: string;
   periodicity: 'Mensual' | 'Trimestral' | 'Anual' | 'Diaria' | 'Por evento' | string;

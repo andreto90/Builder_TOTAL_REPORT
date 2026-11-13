@@ -15,6 +15,11 @@ import {
   TotaliaSuggestion,
   TransmissionType,
 } from './types';
+import {
+  AMERICAS_EUROPE_ENTITY_TYPES,
+  AMERICAS_EUROPE_REGULATORY_FORMATS,
+} from './americasEuropeFormats';
+import { COLOMBIA_EXTENDED_FORMATS } from './colombiaExtendedFormats';
 
 export const INITIAL_OUTPUT_TYPES: OutputType[] = [
   {
@@ -3156,6 +3161,62 @@ export const ENTITY_TYPES_CATALOG: EntityTypeDefinition[] = [
     description: 'Personas jurídicas, agentes de retención y declarantes de tributos nacionales e información exógena.',
     regulatorMain: 'DIAN',
   },
+  {
+    id: 'ET-CO-SCB-FIC',
+    code: '08',
+    name: 'Sociedades Comisionistas de Bolsa y FIC',
+    country: 'Colombia',
+    description: 'Sociedades comisionistas de bolsa, administradoras de FIC, fondos de capital privado e intermediarios de valores.',
+    regulatorMain: 'SFC / BVC / AMV',
+  },
+  {
+    id: 'ET-CO-AFP',
+    code: '09',
+    name: 'Administradoras de Fondos de Pensiones y Cesantías (AFP)',
+    country: 'Colombia',
+    description: 'Sociedades administradoras de fondos de pensiones obligatorias, voluntarias y cesantías vigiladas por la SFC.',
+    regulatorMain: 'SFC',
+  },
+  {
+    id: 'ET-CO-SEDPE',
+    code: '10',
+    name: 'Sociedades Especializadas en Depósitos y Pagos Electrónicos (SEDPE)',
+    country: 'Colombia',
+    description: 'Entidades especializadas en pagos, transferencias y depósitos electrónicos reguladas por Ley 1735 y la SFC.',
+    regulatorMain: 'SFC',
+  },
+  {
+    id: 'ET-CO-SOCIEDADES',
+    code: '11',
+    name: 'Sociedades Comerciales (Supersociedades)',
+    country: 'Colombia',
+    description: 'Sociedades comerciales, sucursales extranjeras y empresas sujetas a inspección, vigilancia o control de Supersociedades.',
+    regulatorMain: 'Supersociedades',
+  },
+  {
+    id: 'ET-CO-SALUD',
+    code: '12',
+    name: 'Entidades de Salud EPS / IPS (Supersalud)',
+    country: 'Colombia',
+    description: 'Entidades Promotoras de Salud (EPS), Instituciones Prestadoras (IPS) y adaptadas vigiladas por Supersalud.',
+    regulatorMain: 'Supersalud',
+  },
+  {
+    id: 'ET-CO-PUBLICAS',
+    code: '13',
+    name: 'Entidades Públicas (CGN / CHIP)',
+    country: 'Colombia',
+    description: 'Entidades de gobierno general y empresas estatales obligadas a reportar contabilidad pública en CHIP ante la CGN.',
+    regulatorMain: 'CGN / CHIP',
+  },
+  {
+    id: 'ET-CO-OPERADORES-REG',
+    code: '14',
+    name: 'Operadores de Transporte y Juegos Autorizados',
+    country: 'Colombia',
+    description: 'Empresas vigiladas por Supertransporte (VIGIA) y operadores autorizados de juegos de suerte y azar (Coljuegos).',
+    regulatorMain: 'Supertransporte / Coljuegos',
+  },
 
   // Perú
   {
@@ -3222,6 +3283,7 @@ export const ENTITY_TYPES_CATALOG: EntityTypeDefinition[] = [
     description: 'Cooperativas inscritas y supervisadas bajo el régimen SBS de la Ley 30822.',
     regulatorMain: 'SBS Perú',
   },
+  ...AMERICAS_EUROPE_ENTITY_TYPES,
 ];
 
 export const INITIAL_RECEIVING_ORGANISMS: ReceivingOrganismDefinition[] = [
@@ -4610,6 +4672,8 @@ export const INITIAL_REGULATORY_FORMATS: RegulatoryFormat[] = [
     description:
       'Referencia informativa de provisiones crediticias. Permite preparar la configuración pero bloquea la activación operativa hasta validar la clasificación institucional.',
   },
+  ...COLOMBIA_EXTENDED_FORMATS,
+  ...AMERICAS_EUROPE_REGULATORY_FORMATS,
 ];
 
 export const INITIAL_TRANSMISSION_TYPES: TransmissionType[] = [

@@ -20,30 +20,42 @@ import { useConfigurator } from '../context/ConfiguratorContext';
 import {
   ConfiguredOutput,
   LifecycleStatus,
-  StructureField,
-  TechnicalFamily,
 } from '../domain/types';
+import {
+  WizardFormatSelection,
+  buildWizardAssociationRecords,
+} from '../domain/engine';
 import { HelpTooltip } from './HelpTooltip';
+import { SimplifiedOutputWizardModal } from './SimplifiedOutputWizardModal';
 import { generateAndDownloadWordManual } from '../utils/generateWordManual';
 
 export const DashboardCatalogView: React.FC = () => {
   const {
     outputTypes,
     configuredOutputs,
+    dataContracts,
+    deliveryChannels,
+    receivingOrganisms,
     regulatoryFormats,
+    transmissionTypes,
     associations,
     totaliaSuggestions,
     globalEntity,
+    globalPeriod,
+    globalEnvironment,
     activeUserRole,
+    setSelectedOutputId,
     openOutputInBuilder,
     openAssociationForOutput,
     createNewRevisionFromOutput,
     duplicateOutputIndependently,
     deleteConfiguredOutput,
     saveConfiguredOutput,
+    saveAssociation,
     setActiveModule,
     exportDomainJson,
     resetDemoData,
+    notify,
   } = useConfigurator();
 
   const [searchQuery, setSearchQuery] = useState('');
@@ -51,16 +63,8 @@ export const DashboardCatalogView: React.FC = () => {
   const [statusFilter, setStatusFilter] = useState<string>('ALL');
   const [regulatorFilter, setRegulatorFilter] = useState<string>('ALL');
 
-  // Modal: Create New Output
+  // Modal: Simplified Output Creation Assistant
   const [showCreateModal, setShowCreateModal] = useState<boolean>(false);
-  const [newName, setNewName] = useState<string>('Reporte Regulatorio de Cartera');
-  const [newCode, setNewCode] = useState<string>('SAL-CARTERA-01');
-  const [newDescription, setNewDescription] = useState<string>(
-    'Salida regulatoria configurada para entrega de operaciones del periodo.'
-  );
-  const [newOutputTypeId, setNewOutputTypeId] = useState<string>('TYPE-CSV-01');
-  const [newRegulator, setNewRegulator] = useState<string>('SFC / Ente Supervisor');
-  const [newStarterMode, setNewStarterMode] = useState<'single' | 'five'>('single');
 
   // Modal: Create New Revision
   const [revisionTarget, setRevisionTarget] = useState<ConfiguredOutput | null>(null);
@@ -118,330 +122,63 @@ export const DashboardCatalogView: React.FC = () => {
     (s) => s.status === 'Pendiente de revisión'
   ).length;
 
-  const buildStarterFields = (
-    family: TechnicalFamily,
-    mode: 'single' | 'five'
-  ): StructureField[] => {
-    if (mode === 'single') {
-      return [
-        {
-          id: `FLD-${Date.now()}-1`,
-          technicalName: 'id_obligacion',
-          label: 'ID Obligación',
-          description: 'Identificador único de la operación reportada',
-          recordSection: 'Detalle',
-          order: 1,
-          dataType: 'Texto',
-          physicalType: 'VARCHAR(12)',
-          length: 12,
-          lengthUnit: 'Caracteres',
-          required: true,
-          nullable: false,
-          startPosition: 1,
-          formatMask: '',
-          defaultValue: '',
-          paddingChar: family === 'TXT' ? '0' : 'Ninguno',
-          alignment: family === 'TXT' ? 'Derecha' : 'Izquierda',
-          overflowRule: 'Bloquear con error',
-          protectionClass: 'Parametrizable',
-          evidenceState: 'Sustento explícito',
-          evidenceSourceRef: 'Definido por usuario',
-          xmlNodeKind: 'Elemento',
-          avroLogicalType: 'string',
-          mapping: {
-            transformationKind: 'Directo',
-            sourceContractId: 'DC-CARTERA-01',
-            sourceField: 'id_obligacion',
-            expression: 'id_obligacion',
-            isParameterizedPoint: false,
-            emptyTreatment: 'Error bloqueante',
-            mappingStatus: 'Confirmado por usuario',
-          },
-        },
-      ];
-    }
+  const existingCodes = useMemo(
+    () => configuredOutputs.map((o) => o.code),
+    [configuredOutputs]
+  );
 
-    return [
-      {
-        id: `FLD-${Date.now()}-1`,
-        technicalName: 'fecha_corte',
-        label: 'Fecha de Corte',
-        description: 'Fecha de corte del periodo reportado',
-        recordSection: 'Detalle',
-        order: 1,
-        dataType: 'Fecha',
-        physicalType: 'DATE',
-        length: 10,
-        lengthUnit: 'Caracteres',
-        required: true,
-        nullable: false,
-        startPosition: 1,
-        formatMask: 'dd-MM-yyyy',
-        defaultValue: '',
-        paddingChar: family === 'TXT' ? ' ' : 'Ninguno',
-        alignment: 'Izquierda',
-        overflowRule: 'Bloquear con error',
-        protectionClass: 'Parametrizable',
-        evidenceState: 'Sustento explícito',
-        evidenceSourceRef: 'Instructivo Regulatorio',
-        xmlNodeKind: 'Elemento',
-        avroLogicalType: 'int (date)',
-        mapping: {
-          transformationKind: 'Máscara fecha/número',
-          sourceContractId: 'DC-CARTERA-01',
-          sourceField: 'fecha_corte',
-          expression: 'dd-MM-yyyy',
-          isParameterizedPoint: false,
-          emptyTreatment: 'Error bloqueante',
-          mappingStatus: 'Confirmado por usuario',
-        },
-      },
-      {
-        id: `FLD-${Date.now()}-2`,
-        technicalName: 'id_obligacion',
-        label: 'ID Obligación',
-        description: 'Identificador único del contrato u obligación',
-        recordSection: 'Detalle',
-        order: 2,
-        dataType: 'Texto',
-        physicalType: 'VARCHAR(6)',
-        length: 6,
-        lengthUnit: 'Caracteres',
-        required: true,
-        nullable: false,
-        startPosition: 11,
-        formatMask: '',
-        defaultValue: '',
-        paddingChar: '0',
-        alignment: 'Derecha',
-        overflowRule: 'Bloquear con error',
-        protectionClass: 'Parametrizable',
-        evidenceState: 'Sustento explícito',
-        evidenceSourceRef: 'Instructivo Regulatorio',
-        xmlNodeKind: 'Atributo',
-        avroLogicalType: 'string',
-        mapping: {
-          transformationKind: 'Directo',
-          sourceContractId: 'DC-CARTERA-01',
-          sourceField: 'id_obligacion',
-          expression: 'id_obligacion',
-          isParameterizedPoint: false,
-          emptyTreatment: 'Error bloqueante',
-          mappingStatus: 'Confirmado por usuario',
-        },
-      },
-      {
-        id: `FLD-${Date.now()}-3`,
-        technicalName: 'nombre_cliente',
-        label: 'Nombre o Razón Social',
-        description: 'Nombre completo del titular de la obligación',
-        recordSection: 'Detalle',
-        order: 3,
-        dataType: 'Texto',
-        physicalType: 'VARCHAR(50)',
-        length: 50,
-        lengthUnit: 'Caracteres',
-        required: true,
-        nullable: false,
-        startPosition: 17,
-        formatMask: '',
-        defaultValue: '',
-        paddingChar: family === 'TXT' ? ' ' : 'Ninguno',
-        alignment: 'Izquierda',
-        overflowRule: 'Bloquear con error',
-        protectionClass: 'Parametrizable',
-        evidenceState: 'Sustento explícito',
-        evidenceSourceRef: 'Instructivo Regulatorio',
-        xmlNodeKind: 'Elemento',
-        avroLogicalType: 'string',
-        mapping: {
-          transformationKind: 'Concatenación tipada',
-          sourceContractId: 'DC-CARTERA-01',
-          sourceField: 'nombre',
-          expression: "nombre + ' ' + apellido_1",
-          isParameterizedPoint: false,
-          emptyTreatment: 'Error bloqueante',
-          mappingStatus: 'Confirmado por usuario',
-        },
-      },
-      {
-        id: `FLD-${Date.now()}-4`,
-        technicalName: 'saldo',
-        label: 'Saldo al Corte',
-        description: 'Saldo capital en moneda local con 2 decimales',
-        recordSection: 'Detalle',
-        order: 4,
-        dataType: 'Decimal',
-        physicalType: 'DECIMAL(16,2)',
-        length: 16,
-        lengthUnit: 'Caracteres',
-        precision: 16,
-        scale: 2,
-        required: true,
-        nullable: false,
-        startPosition: 67,
-        formatMask: '0.00',
-        defaultValue: '0.00',
-        paddingChar: family === 'TXT' ? '0' : 'Ninguno',
-        alignment: 'Derecha',
-        overflowRule: 'Bloquear con error',
-        protectionClass: 'Parametrizable',
-        evidenceState: 'Sustento explícito',
-        evidenceSourceRef: 'Instructivo Regulatorio',
-        xmlNodeKind: 'Elemento',
-        avroLogicalType: 'bytes (decimal 16,2)',
-        mapping: {
-          transformationKind: 'Directo',
-          sourceContractId: 'DC-CARTERA-01',
-          sourceField: 'saldo',
-          expression: 'saldo',
-          isParameterizedPoint: false,
-          emptyTreatment: 'Error bloqueante',
-          mappingStatus: 'Confirmado por usuario',
-        },
-      },
-      {
-        id: `FLD-${Date.now()}-5`,
-        technicalName: 'estado_operacion',
-        label: 'Estado de la Operación',
-        description: 'Estado crediticio de la operación al corte',
-        recordSection: 'Detalle',
-        order: 5,
-        dataType: 'Catálogo',
-        physicalType: 'VARCHAR(12)',
-        length: 12,
-        lengthUnit: 'Caracteres',
-        required: true,
-        nullable: false,
-        startPosition: 83,
-        formatMask: '',
-        defaultValue: 'VIGENTE',
-        paddingChar: family === 'TXT' ? ' ' : 'Ninguno',
-        alignment: 'Izquierda',
-        overflowRule: 'Bloquear con error',
-        protectionClass: 'Parametrizable',
-        evidenceState: 'Sustento explícito',
-        evidenceSourceRef: 'Instructivo Regulatorio',
-        xmlNodeKind: 'Elemento',
-        avroLogicalType: 'string',
-        mapping: {
-          transformationKind: 'Directo',
-          sourceContractId: 'DC-CARTERA-01',
-          sourceField: 'estado_homologado',
-          expression: 'estado_homologado',
-          isParameterizedPoint: false,
-          emptyTreatment: 'Valor predeterminado',
-          mappingStatus: 'Confirmado por usuario',
-        },
-      },
-    ];
+  const openCreateOutputModal = () => {
+    setShowCreateModal(true);
   };
 
-  const handleCreateNewOutput = (e: React.FormEvent) => {
-    e.preventDefault();
-    const outType = outputTypes.find((t) => t.id === newOutputTypeId) || outputTypes[0];
-    const cleanCode = newCode.trim().toUpperCase() || `SAL-${Date.now().toString().slice(-4)}`;
-    const cleanName = newName.trim() || 'Nueva Salida Regulatoria';
-    const fields = buildStarterFields(outType.family, newStarterMode);
+  const handleWizardCreateOutput = (
+    created: ConfiguredOutput,
+    formatSelections: WizardFormatSelection[],
+    openAdvancedBuilder: boolean
+  ) => {
+    saveConfiguredOutput(created, true);
 
-    const extMap: Record<TechnicalFamily, string> = {
-      CSV: 'csv',
-      TXT: 'txt',
-      XML: 'xml',
-      AVRO: 'avro',
-      XBRL: 'xbrl',
-      PDF: 'pdf',
-      XLSX: 'xlsx',
-    };
+    const outType = outputTypes.find((t) => t.id === created.outputTypeId);
+    const { records, skipped } = buildWizardAssociationRecords({
+      selections: formatSelections,
+      configuredOutput: created,
+      outputType: outType,
+      formats: regulatoryFormats,
+      transmissionTypes,
+      existingAssociations: associations,
+      entityScope: globalEntity,
+      environment: globalEnvironment,
+      deliveryChannelId: created.defaultDeliveryChannelId || deliveryChannels[0]?.id || 'CHAN-MANUAL-01',
+      activeUserRole,
+      nowDate: created.updatedAt,
+    });
 
-    const created: ConfiguredOutput = {
-      id: `OUT-${Date.now().toString(36).toUpperCase()}`,
-      code: cleanCode,
-      name: cleanName,
-      purpose: 'Entrega regulatoria configurada desde el asistente',
-      jurisdiction: 'Colombia',
-      regulator: newRegulator.trim() || 'SFC / Ente Supervisor',
-      outputTypeId: outType.id,
-      description:
-        newDescription.trim() ||
-        'Salida configurada desde el asistente visual de TÓTAL REPORT®.',
-      responsibleUser: activeUserRole,
-      validFrom: '2026-11-01',
-      validTo: 'Abierta',
-      version: '1.0',
-      status: 'Borrador',
-      derivationType: 'Original',
-      updatedAt: '2026-11-09',
-      fingerprint: `SHA256:${cleanCode}-V10`,
-      composition: {
-        fileNamePattern: `{entidad}_${cleanCode}_{periodo}_v{version}`,
-        extension: extMap[outType.family],
-        encoding: 'UTF-8',
-        delimiter:
-          outType.family === 'CSV'
-            ? ';'
-            : outType.family === 'TXT'
-            ? 'Ancho fijo'
-            : 'N/A',
-        decimalSeparator: ',',
-        includeHeader: outType.family === 'CSV' || outType.family === 'TXT',
-        includeControlTotals: false,
-        includeFooter: outType.family === 'TXT',
-        packaging: 'Sin empaquetar',
-        maxPackageBytes: 52428800,
-        emptyDatasetPolicy: 'Producir vacío válido',
-        packageMembers: [
-          {
-            id: `PKG-${Date.now()}`,
-            role: 'Principal',
-            cardinality: '1..1 (Obligatorio)',
-            outputDefinitionId: cleanCode,
-            outputVersion: '1.0',
-            fileNamePattern: `{entidad}_${cleanCode}_{periodo}_v{version}.${extMap[outType.family]}`,
-            includeInRegulatoryDelivery: true,
-            allowRoleMappingOverride: true,
-          },
-        ],
-      },
-      dataContractId: 'DC-CARTERA-01',
-      fields,
-      validationRules: [
-        {
-          id: `VR-${Date.now()}-1`,
-          code: 'VAL-EST-01',
-          name: 'Verificación de longitud y obligatoriedad de campos',
-          layer: 'Diseño y estructura',
-          targetFieldOrRole: 'Todos los campos',
-          conditionExpression: 'ALL_REQUIRED_PRESENT() AND NO_FIELD_OVERFLOW()',
-          severity: 'Bloqueante',
-          isNormativeProtected: false,
-          owner: 'Política de salida y entrega',
-          diagnosticMessage:
-            'Existen campos obligatorios vacíos o valores que exceden la longitud configurada.',
-          enabled: true,
-        },
-      ],
-      defaultDeliveryChannelId: 'CHAN-MANUAL-01',
-      signatureServiceRef: 'KMS-INST-01',
-      encryptionPolicy: 'Sin cifrado adicional (TLS canal)',
-      sourceDocIds: ['DOC-SFC-01'],
-      versionHistory: [
-        {
-          version: '1.0',
-          status: 'Borrador',
-          createdAt: '2026-11-09 09:00',
-          createdBy: activeUserRole,
-          justification: 'Creación inicial desde Salidas configuradas.',
-          changesSummary: ['Creación inicial de estructura'],
-          fingerprint: `SHA256:${cleanCode}-V10`,
-          derivationKind: 'Creación inicial',
-        },
-      ],
-    };
+    records.forEach((assoc) => saveAssociation(assoc, true));
 
-    saveConfiguredOutput(created);
+    setSelectedOutputId(created.id);
     setShowCreateModal(false);
-    openOutputInBuilder(created.id, 1);
+
+    const assocSummary =
+      records.length > 0
+        ? ` y asociada a ${records.length} formato(s) de destino`
+        : '';
+    const skippedNotice =
+      skipped.length > 0
+        ? ` (${skipped.length} formato(s) omitido(s) por validación: ${skipped[0].reason})`
+        : '';
+
+    if (openAdvancedBuilder) {
+      openOutputInBuilder(created.id, 1);
+      notify(
+        skipped.length > 0 ? 'warning' : 'info',
+        `Salida "${created.code}" (v${created.version}${assocSummary}) abierta en Opciones avanzadas (Diseñador completo de 7 pasos).${skippedNotice}`
+      );
+    } else {
+      notify(
+        skipped.length > 0 ? 'warning' : 'success',
+        `Salida "${created.code}" (v${created.version} · ${created.fields.length} campos${assocSummary}) creada en borrador.${skippedNotice}`
+      );
+    }
   };
 
   const renderStatusBadge = (status: LifecycleStatus) => {
@@ -583,7 +320,7 @@ export const DashboardCatalogView: React.FC = () => {
           )}
           <button
             type="button"
-            onClick={() => setShowCreateModal(true)}
+            onClick={openCreateOutputModal}
             className="inline-flex items-center gap-2 px-4 py-2.5 rounded text-xs font-bold bg-[#1E4E8C] text-white hover:bg-[#163A69] shadow-xs transition-colors cursor-pointer"
           >
             <Plus className="w-4 h-4" />
@@ -982,169 +719,30 @@ export const DashboardCatalogView: React.FC = () => {
         </div>
       </div>
 
-      {/* Modal 1: Create New Output */}
-      {showCreateModal && (
-        <div className="fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center p-4">
-          <div className="bg-white border border-slate-200 rounded-md shadow-xl max-w-lg w-full overflow-hidden">
-            <div className="px-4 py-3 bg-[#0F1F38] text-white flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <Plus className="w-4 h-4 text-blue-300" />
-                <h3 className="text-sm font-bold">Crear nueva salida regulatoria</h3>
-              </div>
-              <button
-                type="button"
-                onClick={() => setShowCreateModal(false)}
-                className="text-xs text-slate-300 hover:text-white cursor-pointer"
-              >
-                Cerrar
-              </button>
-            </div>
-
-            <form onSubmit={handleCreateNewOutput} className="p-4 space-y-3.5 text-xs">
-              <div>
-                <label className="block font-semibold text-slate-800 mb-1">
-                  Nombre de la salida *
-                </label>
-                <input
-                  type="text"
-                  required
-                  value={newName}
-                  onChange={(e) => setNewName(e.target.value)}
-                  placeholder="Ej. Reporte Mensual de Cartera de Crédito"
-                  className="w-full border border-slate-300 rounded px-2.5 py-1.5 text-slate-900"
-                />
-              </div>
-
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <div>
-                  <label className="block font-semibold text-slate-800 mb-1">
-                    Código identificador *
-                  </label>
-                  <input
-                    type="text"
-                    required
-                    value={newCode}
-                    onChange={(e) => setNewCode(e.target.value)}
-                    placeholder="Ej. SAL-CARTERA-01"
-                    className="w-full border border-slate-300 rounded px-2.5 py-1.5 font-mono text-slate-900"
-                  />
-                </div>
-
-                <div>
-                  <label className="block font-semibold text-slate-800 mb-1">
-                    Entidad reguladora *
-                  </label>
-                  <input
-                    type="text"
-                    required
-                    value={newRegulator}
-                    onChange={(e) => setNewRegulator(e.target.value)}
-                    placeholder="Ej. SFC / SBS / CNBV"
-                    className="w-full border border-slate-300 rounded px-2.5 py-1.5 text-slate-900"
-                  />
-                </div>
-              </div>
-
-              <div>
-                <label className="block font-semibold text-slate-800 mb-1">
-                  Tipo de archivo (Tipo de salida reutilizable) *
-                </label>
-                <select
-                  aria-label="Seleccionar tipo de archivo para la nueva salida"
-                  value={newOutputTypeId}
-                  onChange={(e) => setNewOutputTypeId(e.target.value)}
-                  className="w-full border border-slate-300 rounded px-2.5 py-1.5 bg-white text-slate-900 font-medium"
-                >
-                  {outputTypes.map((ot) => (
-                    <option key={ot.id} value={ot.id}>
-                      {ot.family} — {ot.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div>
-                <label className="block font-semibold text-slate-800 mb-1">
-                  Descripción funcional
-                </label>
-                <textarea
-                  rows={2}
-                  value={newDescription}
-                  onChange={(e) => setNewDescription(e.target.value)}
-                  className="w-full border border-slate-300 rounded px-2.5 py-1.5 text-slate-900"
-                />
-              </div>
-
-              <div>
-                <label className="block font-semibold text-slate-800 mb-1">
-                  Punto de partida para los campos
-                </label>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                  <label
-                    className={`p-2.5 rounded border cursor-pointer flex items-start gap-2 ${
-                      newStarterMode === 'single'
-                        ? 'border-[#1E4E8C] bg-blue-50/60 text-slate-900'
-                        : 'border-slate-200 bg-white text-slate-700'
-                    }`}
-                  >
-                    <input
-                      type="radio"
-                      name="starterMode"
-                      checked={newStarterMode === 'single'}
-                      onChange={() => setNewStarterMode('single')}
-                      className="mt-0.5"
-                    />
-                    <div>
-                      <div className="font-semibold">Estructura inicial limpia</div>
-                      <div className="text-[11px] text-slate-500">
-                        Inicia con 1 campo base para que agregue sus propios campos paso a paso.
-                      </div>
-                    </div>
-                  </label>
-
-                  <label
-                    className={`p-2.5 rounded border cursor-pointer flex items-start gap-2 ${
-                      newStarterMode === 'five'
-                        ? 'border-[#1E4E8C] bg-blue-50/60 text-slate-900'
-                        : 'border-slate-200 bg-white text-slate-700'
-                    }`}
-                  >
-                    <input
-                      type="radio"
-                      name="starterMode"
-                      checked={newStarterMode === 'five'}
-                      onChange={() => setNewStarterMode('five')}
-                      className="mt-0.5"
-                    />
-                    <div>
-                      <div className="font-semibold">Plantilla de 5 campos</div>
-                      <div className="text-[11px] text-slate-500">
-                        Incluye 5 campos regulatorios típicos (Fecha, ID, Tipo Doc, Nombre, Saldo).
-                      </div>
-                    </div>
-                  </label>
-                </div>
-              </div>
-
-              <div className="flex justify-end gap-2 pt-3 border-t border-slate-200">
-                <button
-                  type="button"
-                  onClick={() => setShowCreateModal(false)}
-                  className="px-3 py-1.5 rounded border border-slate-300 text-slate-700 hover:bg-slate-50 cursor-pointer"
-                >
-                  Cancelar
-                </button>
-                <button
-                  type="submit"
-                  className="px-4 py-1.5 rounded bg-[#1E4E8C] text-white font-semibold hover:bg-[#163A69] cursor-pointer"
-                >
-                  Crear y abrir en el Diseñador
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
+      {/* Modal 1: Simplified 4-Step Enterprise Assistant with Handoff to Opciones Avanzadas */}
+      <SimplifiedOutputWizardModal
+        isOpen={showCreateModal}
+        onClose={() => setShowCreateModal(false)}
+        outputTypes={outputTypes}
+        receivingOrganisms={receivingOrganisms}
+        regulatoryFormats={regulatoryFormats}
+        transmissionTypes={transmissionTypes}
+        existingAssociations={associations}
+        existingCodes={existingCodes}
+        responsibleUser={activeUserRole}
+        globalEntity={globalEntity}
+        globalPeriod={globalPeriod}
+        globalEnvironment={globalEnvironment}
+        defaultContractId={dataContracts[0]?.id}
+        defaultChannelId={deliveryChannels[0]?.id}
+        defaultContractName={dataContracts[0]?.name}
+        defaultChannelName={
+          deliveryChannels[0]
+            ? `${deliveryChannels[0].name} (${deliveryChannels[0].protocol})`
+            : undefined
+        }
+        onCreateOutput={handleWizardCreateOutput}
+      />
 
       {/* Modal 2: Create Revision */}
       {revisionTarget && (

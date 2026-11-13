@@ -11,6 +11,7 @@ import {
 } from 'lucide-react';
 import { useConfigurator } from '../context/ConfiguratorContext';
 import { HelpTooltip } from './HelpTooltip';
+import { TotalReportLogo } from './TotalReportLogo';
 
 export const TotaliaAssistantView: React.FC = () => {
   const {
@@ -45,7 +46,7 @@ export const TotaliaAssistantView: React.FC = () => {
       <div className="bg-white border border-slate-200 rounded-md p-4 flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
         <div>
           <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-[#1E4E8C]">
-            <Sparkles className="w-4 h-4" />
+            <TotalReportLogo className="w-5 h-5 object-contain shrink-0" alt="Logo TOTALiA®" />
             <span>
               E.2 · Acompañamiento Contextual y Comparación Normativa TOTALiA® (Repositorio Normativo Precargado)
             </span>

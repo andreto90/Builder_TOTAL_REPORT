@@ -167,7 +167,7 @@ interface ConfiguratorContextValue {
   transitionOutputStatus: (outputId: string, nextStatus: LifecycleStatus, justification: string) => boolean;
 
   // Actions — Associations
-  saveAssociation: (assoc: FormatOutputAssociation) => void;
+  saveAssociation: (assoc: FormatOutputAssociation, silent?: boolean) => void;
   deleteAssociation: (assocId: string) => void;
   unlinkAssociation: (assocId: string, reason?: string) => void;
   adoptOutputVersionInAssociation: (assocId: string, newVersion: string) => void;
@@ -1212,7 +1212,7 @@ export const ConfiguratorProvider: React.FC<{ children: React.ReactNode }> = ({ 
     return true;
   };
 
-  const saveAssociation = (assoc: FormatOutputAssociation) => {
+  const saveAssociation = (assoc: FormatOutputAssociation, silent = false) => {
     const updatedAssoc: FormatOutputAssociation = {
       ...assoc,
       updatedAt: getNowDate(),
@@ -1225,10 +1225,12 @@ export const ConfiguratorProvider: React.FC<{ children: React.ReactNode }> = ({ 
       }
       return [...prev, updatedAssoc];
     });
-    notify(
-      'success',
-      `Asociación ${updatedAssoc.code} guardada en estado "${updatedAssoc.status}" apuntando a la versión v${updatedAssoc.configuredOutputVersion}.`
-    );
+    if (!silent) {
+      notify(
+        'success',
+        `Asociación ${updatedAssoc.code} guardada en estado "${updatedAssoc.status}" apuntando a la versión v${updatedAssoc.configuredOutputVersion}.`
+      );
+    }
   };
 
   const deleteAssociation = (assocId: string) => {
